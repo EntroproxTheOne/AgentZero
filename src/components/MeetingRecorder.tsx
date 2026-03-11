@@ -1,23 +1,24 @@
 import { useState, useRef } from 'react';
-import { Mic, MonitorSmartphone, Square } from 'lucide-react';
+import { Mic, MonitorSmartphone, AlertCircle } from 'lucide-react';
 import ConsentModal from './ConsentModal';
 
 interface MeetingRecorderProps {
-  onRecordingStarted?: (stream: MediaStream) => void;
+  onRecordingStarted?: (stream: MediaStream, stopFn: () => Promise<void>) => void;
   onRecordingStopped?: () => void;
-  compact?: boolean;
 }
 
-export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped, compact }: MeetingRecorderProps) {
+export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped }: MeetingRecorderProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [showConsent, setShowConsent] = useState(false);
   const [detectedApps, setDetectedApps] = useState<string[]>([]);
   const [detecting, setDetecting] = useState(false);
+  const [noAppDetected, setNoAppDetected] = useState(false);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const meetingIdRef = useRef<number>(0);
   const dbIdRef = useRef<number>(0);
   const startTimeRef = useRef<number>(0);
   const titleRef = useRef<string>('');
+  const isStoppingRef = useRef(false);
 
   const handleRecordClick = async () => {
     if (isRecording) {
@@ -26,15 +27,23 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
     }
 
     setDetecting(true);
+    setNoAppDetected(false);
     try {
       const apps = window.electronAPI
         ? await window.electronAPI.detectMeetingApps()
         : [];
       setDetectedApps(apps);
-      titleRef.current = apps.length > 0 ? `${apps[0]} Meeting` : 'Untitled Meeting';
+      if (apps.length > 0) {
+        titleRef.current = `${apps[0]} Meeting`;
+        setNoAppDetected(false);
+      } else {
+        titleRef.current = 'Untitled Meeting';
+        setNoAppDetected(true);
+      }
     } catch {
       setDetectedApps([]);
       titleRef.current = 'Untitled Meeting';
+      setNoAppDetected(true);
     }
     setDetecting(false);
     setShowConsent(true);
@@ -60,11 +69,64 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
       }
       startTimeRef.current = Date.now();
 
-      const displayStream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-      });
+      let displayStream: MediaStream;
 
+      if (window.electronAPI && detectedApps.length > 0) {
+        // Try to find the specific meeting app window
+        const sources = await window.electronAPI.getDesktopSources();
+
+        // Window title matching keywords per detected app
+        const matchingSource = sources.find((s: any) => {
+          const srcName = (s.name || '').toLowerCase();
+          return detectedApps.some(app => {
+            const appLower = app.toLowerCase();
+            // Direct name match
+            if (srcName.includes(appLower)) return true;
+            // Specific keyword matches
+            if (appLower.includes('zoom') && srcName.includes('zoom')) return true;
+            if (appLower.includes('teams') && srcName.includes('teams')) return true;
+            if (appLower.includes('webex') && srcName.includes('webex')) return true;
+            if (appLower.includes('google meet') && srcName.includes('meet')) return true;
+            if (appLower.includes('skype') && srcName.includes('skype')) return true;
+            if (appLower.includes('discord') && srcName.includes('discord')) return true;
+            if (appLower.includes('slack') && srcName.includes('slack')) return true;
+            if (appLower.includes('bluejeans') && srcName.includes('bluejeans')) return true;
+            if (appLower.includes('gotomeeting') && srcName.includes('gotomeeting')) return true;
+            return false;
+          });
+        });
+
+        if (matchingSource) {
+          // Capture specific window
+          displayStream = await (navigator.mediaDevices as any).getUserMedia({
+            audio: {
+              mandatory: {
+                chromeMediaSource: 'desktop',
+              },
+            },
+            video: {
+              mandatory: {
+                chromeMediaSource: 'desktop',
+                chromeMediaSourceId: matchingSource.id,
+              },
+            },
+          });
+        } else {
+          // No matching window found — fall back to screen picker
+          displayStream = await navigator.mediaDevices.getDisplayMedia({
+            video: true,
+            audio: true,
+          });
+        }
+      } else {
+        // No apps detected — use screen picker
+        displayStream = await navigator.mediaDevices.getDisplayMedia({
+          video: true,
+          audio: true,
+        });
+      }
+
+      // Capture microphone
       const voiceStream = await navigator.mediaDevices.getUserMedia({
         audio: true,
         video: false,
@@ -81,6 +143,7 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
         mimeType: 'video/webm; codecs=vp9',
       });
       mediaRecorderRef.current = mediaRecorder;
+      isStoppingRef.current = false;
 
       mediaRecorder.ondataavailable = async (e) => {
         if (e.data.size > 0 && window.electronAPI) {
@@ -95,8 +158,7 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
       mediaRecorder.start(5000);
       setIsRecording(true);
 
-      // Pass stream up for Analysis Mode
-      onRecordingStarted?.(combinedStream);
+      onRecordingStarted?.(combinedStream, stopRecording);
 
       displayStream.getVideoTracks()[0].onended = () => {
         stopRecording();
@@ -107,9 +169,15 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
   };
 
   const stopRecording = async () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
+    if (isStoppingRef.current) return;
+    isStoppingRef.current = true;
+
+    if (mediaRecorderRef.current) {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch { /* already stopped */ }
       mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
+      mediaRecorderRef.current = null;
       setIsRecording(false);
 
       onRecordingStopped?.();
@@ -128,29 +196,8 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
         }
       }
     }
+    isStoppingRef.current = false;
   };
-
-  // Compact mode: just a stop button for use inside Analysis view
-  if (compact) {
-    return (
-      <div className="recorder-compact">
-        {showConsent && (
-          <ConsentModal
-            detectedApps={detectedApps}
-            onAccept={handleConsentAccept}
-            onCancel={handleConsentCancel}
-          />
-        )}
-        <button
-          onClick={handleRecordClick}
-          className="recorder-btn recorder-btn-stop recorder-btn-compact"
-        >
-          <Square size={16} />
-          Stop Recording
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="recorder-container">
@@ -162,10 +209,17 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
         />
       )}
 
-      {!isRecording && detectedApps.length > 0 && !showConsent && (
+      {!isRecording && !showConsent && detectedApps.length > 0 && (
         <div className="detected-banner">
           <MonitorSmartphone size={16} />
           <span>Detected: {detectedApps.join(', ')}</span>
+        </div>
+      )}
+
+      {!isRecording && !showConsent && noAppDetected && (
+        <div className="detected-banner detected-banner-warn">
+          <AlertCircle size={16} />
+          <span>No meeting app detected. You can still record your screen.</span>
         </div>
       )}
 
@@ -192,7 +246,7 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
         )}
       </button>
       <p className="recorder-hint">
-        Click to start recording your meeting. AgentZero will detect running meeting apps, ask for consent, then record video and audio.
+        Click to start. AgentZero will detect running meeting apps, ask for consent, then record the meeting window with audio.
       </p>
     </div>
   );

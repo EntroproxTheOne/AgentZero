@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Settings, History, LayoutDashboard } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Settings, History, LayoutDashboard, Square } from 'lucide-react';
 import TitleBar from './components/TitleBar';
 import MeetingRecorder from './components/MeetingRecorder';
 import PastMeetings from './components/PastMeetings';
@@ -21,6 +21,7 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [recordingStream, setRecordingStream] = useState<MediaStream | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const stopFnRef = useRef<(() => Promise<void>) | null>(null);
 
   const navItems: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
@@ -36,14 +37,22 @@ function App() {
     setUser(null);
   };
 
-  const handleRecordingStarted = (stream: MediaStream) => {
+  const handleRecordingStarted = (stream: MediaStream, stopFn: () => Promise<void>) => {
     setRecordingStream(stream);
     setIsRecording(true);
+    stopFnRef.current = stopFn;
   };
 
   const handleRecordingStopped = () => {
     setRecordingStream(null);
     setIsRecording(false);
+    stopFnRef.current = null;
+  };
+
+  const handleStopClick = async () => {
+    if (stopFnRef.current) {
+      await stopFnRef.current();
+    }
   };
 
   if (!user) {
@@ -94,7 +103,6 @@ function App() {
           {activeTab === 'dashboard' && (
             <>
               {isRecording ? (
-                /* Analysis Mode — shown inside Dashboard when recording */
                 <>
                   <header className="page-header">
                     <h2 className="page-label">Recording in progress</h2>
@@ -105,15 +113,16 @@ function App() {
                     listenerName={user.listener_name || user.username}
                   />
                   <div className="analysis-stop-bar">
-                    <MeetingRecorder
-                      onRecordingStarted={handleRecordingStarted}
-                      onRecordingStopped={handleRecordingStopped}
-                      compact
-                    />
+                    <button
+                      onClick={handleStopClick}
+                      className="recorder-btn recorder-btn-stop recorder-btn-compact"
+                    >
+                      <Square size={16} />
+                      Stop Recording
+                    </button>
                   </div>
                 </>
               ) : (
-                /* Ready state — shown when not recording */
                 <>
                   <header className="page-header">
                     <h2 className="page-label">Current Meeting</h2>

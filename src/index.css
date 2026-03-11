@@ -650,6 +650,11 @@
   margin-bottom: 20px;
   border: 1px solid rgba(57, 255, 20, 0.2);
 }
+.detected-banner-warn {
+  background: rgba(255, 128, 0, 0.1);
+  color: #ff8000;
+  border-color: rgba(255, 128, 0, 0.2);
+}
 .recorder-spinner {
   width: 18px;
   height: 18px;

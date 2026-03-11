@@ -40,7 +40,7 @@ export default function AnalysisMode({ stream, listenerName }: AnalysisModeProps
     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
 
-  const handleAiAsk = async () => {
+  const handleAsk = async () => {
     if (!aiQuestion.trim()) return;
     const question = aiQuestion;
     setAiQuestion('');
@@ -53,7 +53,7 @@ export default function AnalysisMode({ stream, listenerName }: AnalysisModeProps
         ...prev,
         {
           role: 'ai',
-          text: `Based on the meeting transcript, here's what I found about "${question}": This will be powered by Groq API in Phase 7. The AI will analyze the full transcript and provide contextual answers, detect when "${listenerName}" is mentioned, and give quick summaries.`,
+          text: `Based on the meeting transcript, here's what I found about "${question}": This will be powered by Groq in Phase 7. It will analyze the full transcript and provide contextual answers, detect when "${listenerName}" is mentioned, and generate quick summaries.`,
         },
       ]);
       setAiLoading(false);
@@ -62,7 +62,7 @@ export default function AnalysisMode({ stream, listenerName }: AnalysisModeProps
 
   return (
     <div className="analysis-container">
-      {/* Top: Video + Transcript side by side */}
+      {/* Top: Video + QuickRead side by side */}
       <div className="analysis-top">
         <div className="analysis-video-wrap">
           <div className="analysis-video-header">
@@ -79,10 +79,11 @@ export default function AnalysisMode({ stream, listenerName }: AnalysisModeProps
           )}
         </div>
 
+        {/* QuickRead — Live Transcript */}
         <div className="analysis-transcript">
           <div className="analysis-panel-header">
             <Notebook size={16} />
-            <span>Live Transcript</span>
+            <span>QuickRead</span>
           </div>
           <div className="analysis-transcript-list">
             {transcripts.map((entry) => (
@@ -99,7 +100,7 @@ export default function AnalysisMode({ stream, listenerName }: AnalysisModeProps
         </div>
       </div>
 
-      {/* Bottom: AI Assistant (merged AI Ask + QuickLook) */}
+      {/* Bottom: QuickLook */}
       <div className="analysis-bottom">
         <div className="analysis-panel-header">
           <Search size={16} />
@@ -110,7 +111,7 @@ export default function AnalysisMode({ stream, listenerName }: AnalysisModeProps
         <div className="ai-chat-area">
           {aiMessages.length === 0 && !aiLoading && (
             <div className="ai-empty">
-              Ask anything about the meeting, or the AI will auto-respond when "{listenerName}" is mentioned.
+              Ask anything about the meeting, or it will auto-respond when "{listenerName}" is mentioned.
             </div>
           )}
           {aiMessages.map((msg, i) => (
@@ -133,12 +134,12 @@ export default function AnalysisMode({ stream, listenerName }: AnalysisModeProps
             placeholder="Ask about the meeting..."
             value={aiQuestion}
             onChange={(e) => setAiQuestion(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleAiAsk()}
+            onKeyDown={(e) => e.key === 'Enter' && handleAsk()}
             className="ai-input"
           />
           <button
             className="ai-send"
-            onClick={handleAiAsk}
+            onClick={handleAsk}
             disabled={aiLoading || !aiQuestion.trim()}
           >
             <Send size={16} />
