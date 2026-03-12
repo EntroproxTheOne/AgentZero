@@ -2,24 +2,30 @@ import { useState, useRef } from 'react';
 import { Mic, MonitorSmartphone, AlertCircle } from 'lucide-react';
 import ConsentModal from './ConsentModal';
 
+/* ─── Props ─── */
 interface MeetingRecorderProps {
-  onRecordingStarted?: (stream: MediaStream, stopFn: () => Promise<void>) => void;
+  onRecordingStarted?: (stream: MediaStream, stopFn: () => Promise<void>, title: string) => void;
   onRecordingStopped?: () => void;
 }
 
+/* ─── Component ─── */
 export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped }: MeetingRecorderProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [showConsent, setShowConsent] = useState(false);
   const [detectedApps, setDetectedApps] = useState<string[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [noAppDetected, setNoAppDetected] = useState(false);
+
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const meetingIdRef = useRef<number>(0);
   const dbIdRef = useRef<number>(0);
   const startTimeRef = useRef<number>(0);
   const titleRef = useRef<string>('');
   const isStoppingRef = useRef(false);
+  // Track every in-flight saveChunk IPC call so we can await them all before stopMeeting
+  const pendingSavesRef = useRef<Promise<void>[]>([]);
 
+  /* ─── Click Handler ─── */
   const handleRecordClick = async () => {
     if (isRecording) {
       await stopRecording();
@@ -58,6 +64,7 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
     setShowConsent(false);
   };
 
+  /* ─── Start Recording ─── */
   const startRecording = async () => {
     try {
       if (window.electronAPI) {
@@ -72,17 +79,13 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
       let displayStream: MediaStream;
 
       if (window.electronAPI && detectedApps.length > 0) {
-        // Try to find the specific meeting app window
         const sources = await window.electronAPI.getDesktopSources();
 
-        // Window title matching keywords per detected app
         const matchingSource = sources.find((s: any) => {
           const srcName = (s.name || '').toLowerCase();
-          return detectedApps.some(app => {
+          return detectedApps.some((app) => {
             const appLower = app.toLowerCase();
-            // Direct name match
             if (srcName.includes(appLower)) return true;
-            // Specific keyword matches
             if (appLower.includes('zoom') && srcName.includes('zoom')) return true;
             if (appLower.includes('teams') && srcName.includes('teams')) return true;
             if (appLower.includes('webex') && srcName.includes('webex')) return true;
@@ -97,12 +100,9 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
         });
 
         if (matchingSource) {
-          // Capture specific window
           displayStream = await (navigator.mediaDevices as any).getUserMedia({
             audio: {
-              mandatory: {
-                chromeMediaSource: 'desktop',
-              },
+              mandatory: { chromeMediaSource: 'desktop' },
             },
             video: {
               mandatory: {
@@ -112,14 +112,12 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
             },
           });
         } else {
-          // No matching window found — fall back to screen picker
           displayStream = await navigator.mediaDevices.getDisplayMedia({
             video: true,
             audio: true,
           });
         }
       } else {
-        // No apps detected — use screen picker
         displayStream = await navigator.mediaDevices.getDisplayMedia({
           video: true,
           audio: true,
@@ -145,20 +143,26 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
       mediaRecorderRef.current = mediaRecorder;
       isStoppingRef.current = false;
 
-      mediaRecorder.ondataavailable = async (e) => {
+      // Stream every chunk to disk immediately via IPC — no in-memory accumulation.
+      // Each save promise is tracked so stopRecording can wait for ALL of them.
+      mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0 && window.electronAPI) {
-          const buffer = await e.data.arrayBuffer();
-          await window.electronAPI.saveChunk({
-            meetingId: meetingIdRef.current,
-            buffer: Array.from(new Uint8Array(buffer)),
-          });
+          const saveTask = (async () => {
+            const buffer = await e.data.arrayBuffer();
+            await window.electronAPI.saveChunk({
+              meetingId: meetingIdRef.current,
+              buffer: Array.from(new Uint8Array(buffer)),
+            });
+          })();
+          pendingSavesRef.current.push(saveTask);
         }
       };
 
-      mediaRecorder.start(5000);
+      // Emit a chunk every 1000ms for real-time disk streaming
+      mediaRecorder.start(1000);
       setIsRecording(true);
 
-      onRecordingStarted?.(combinedStream, stopRecording);
+      onRecordingStarted?.(combinedStream, stopRecording, titleRef.current);
 
       displayStream.getVideoTracks()[0].onended = () => {
         stopRecording();
@@ -168,37 +172,59 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
     }
   };
 
+  /* ─── Stop Recording ─── */
   const stopRecording = async () => {
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
 
-    if (mediaRecorderRef.current) {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) {
+      isStoppingRef.current = false;
+      return;
+    }
+
+    // Wait for recorder to fully stop (onstop always fires after final ondataavailable)
+    await new Promise<void>((resolve) => {
+      recorder.onstop = () => resolve();
       try {
-        mediaRecorderRef.current.stop();
-      } catch { /* already stopped */ }
-      mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
-      mediaRecorderRef.current = null;
-      setIsRecording(false);
+        recorder.stop();
+      } catch {
+        resolve();
+      }
+    });
 
-      onRecordingStopped?.();
+    // Await every in-flight saveChunk IPC call (including the final chunk).
+    // This guarantees the last chunk is written to disk before we tell
+    // the backend to run ffmpeg on the file.
+    await Promise.all(pendingSavesRef.current);
+    pendingSavesRef.current = [];
 
-      if (window.electronAPI) {
-        try {
-          const result = await window.electronAPI.stopMeeting({
-            meetingId: meetingIdRef.current,
-            dbId: dbIdRef.current,
-            startTime: startTimeRef.current,
-            title: titleRef.current,
-          });
-          console.log('Recording saved:', result.finalName);
-        } catch (err) {
-          console.error('Error finalizing recording:', err);
-        }
+    // Stop all media tracks
+    recorder.stream.getTracks().forEach((t) => t.stop());
+    mediaRecorderRef.current = null;
+    setIsRecording(false);
+
+    onRecordingStopped?.();
+
+    // Tell backend to finalize the file (ffmpeg metadata fix + rename)
+    if (window.electronAPI) {
+      try {
+        const result = await window.electronAPI.stopMeeting({
+          meetingId: meetingIdRef.current,
+          dbId: dbIdRef.current,
+          startTime: startTimeRef.current,
+          title: titleRef.current,
+        });
+        console.log('Recording saved:', result.finalName);
+      } catch (err) {
+        console.error('Error finalizing recording:', err);
       }
     }
+
     isStoppingRef.current = false;
   };
 
+  /* ─── Render ─── */
   return (
     <div className="recorder-container">
       {showConsent && (

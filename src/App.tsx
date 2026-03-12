@@ -5,7 +5,8 @@ import MeetingRecorder from './components/MeetingRecorder';
 import PastMeetings from './components/PastMeetings';
 import SettingsPage from './components/SettingsPage';
 import LoginPage from './components/LoginPage';
-import AnalysisMode from './components/AnalysisMode';
+import BentoGrid from './components/BentoGrid';
+import PostMeetingDashboard from './components/PostMeetingDashboard';
 
 type Tab = 'dashboard' | 'past-meetings' | 'settings';
 
@@ -21,6 +22,8 @@ function App() {
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [recordingStream, setRecordingStream] = useState<MediaStream | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [showPostMeeting, setShowPostMeeting] = useState(false);
+  const [meetingTitle, setMeetingTitle] = useState('');
   const stopFnRef = useRef<(() => Promise<void>) | null>(null);
 
   const navItems: { id: Tab; label: string; icon: React.ReactNode }[] = [
@@ -37,15 +40,18 @@ function App() {
     setUser(null);
   };
 
-  const handleRecordingStarted = (stream: MediaStream, stopFn: () => Promise<void>) => {
+  const handleRecordingStarted = (stream: MediaStream, stopFn: () => Promise<void>, title: string) => {
     setRecordingStream(stream);
     setIsRecording(true);
+    setShowPostMeeting(false);
+    setMeetingTitle(title);
     stopFnRef.current = stopFn;
   };
 
   const handleRecordingStopped = () => {
     setRecordingStream(null);
     setIsRecording(false);
+    setShowPostMeeting(true);
     stopFnRef.current = null;
   };
 
@@ -53,6 +59,10 @@ function App() {
     if (stopFnRef.current) {
       await stopFnRef.current();
     }
+  };
+
+  const handleNewMeeting = () => {
+    setShowPostMeeting(false);
   };
 
   if (!user) {
@@ -63,6 +73,55 @@ function App() {
       </div>
     );
   }
+
+  /* ─── Dashboard Content ─── */
+  const renderDashboard = () => {
+    if (isRecording) {
+      return (
+        <>
+          <header className="page-header page-header-row">
+            <div>
+              <h2 className="page-label">Recording in progress</h2>
+              <h3 className="page-title">Live Meeting</h3>
+            </div>
+            <button
+              onClick={handleStopClick}
+              className="recorder-btn recorder-btn-stop recorder-btn-compact"
+            >
+              <Square size={16} />
+              Stop Recording
+            </button>
+          </header>
+          <BentoGrid
+            stream={recordingStream}
+            listenerName={user.listener_name || user.username}
+          />
+        </>
+      );
+    }
+
+    if (showPostMeeting) {
+      return (
+        <PostMeetingDashboard
+          meetingTitle={meetingTitle}
+          onNewMeeting={handleNewMeeting}
+        />
+      );
+    }
+
+    return (
+      <>
+        <header className="page-header">
+          <h2 className="page-label">Current Meeting</h2>
+          <h3 className="page-title">Ready to record</h3>
+        </header>
+        <MeetingRecorder
+          onRecordingStarted={handleRecordingStarted}
+          onRecordingStopped={handleRecordingStopped}
+        />
+      </>
+    );
+  };
 
   return (
     <div className="app-root">
@@ -100,42 +159,7 @@ function App() {
         </div>
 
         <main className="main-content">
-          {activeTab === 'dashboard' && (
-            <>
-              {isRecording ? (
-                <>
-                  <header className="page-header">
-                    <h2 className="page-label">Recording in progress</h2>
-                    <h3 className="page-title">Analysis Mode</h3>
-                  </header>
-                  <AnalysisMode
-                    stream={recordingStream}
-                    listenerName={user.listener_name || user.username}
-                  />
-                  <div className="analysis-stop-bar">
-                    <button
-                      onClick={handleStopClick}
-                      className="recorder-btn recorder-btn-stop recorder-btn-compact"
-                    >
-                      <Square size={16} />
-                      Stop Recording
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <header className="page-header">
-                    <h2 className="page-label">Current Meeting</h2>
-                    <h3 className="page-title">Ready to record</h3>
-                  </header>
-                  <MeetingRecorder
-                    onRecordingStarted={handleRecordingStarted}
-                    onRecordingStopped={handleRecordingStopped}
-                  />
-                </>
-              )}
-            </>
-          )}
+          {activeTab === 'dashboard' && renderDashboard()}
           {activeTab === 'past-meetings' && <PastMeetings />}
           {activeTab === 'settings' && <SettingsPage user={user} />}
         </main>

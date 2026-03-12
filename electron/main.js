@@ -2,6 +2,8 @@ import { app, BrowserWindow, ipcMain, desktopCapturer, session } from 'electron'
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { exec } from 'child_process';
+import ffmpegPath from 'ffmpeg-static';
 import { initDB } from './db.js';
 import { transcribeChunk } from './transcriber.js';
 import { detectMeetingApps } from './meetingApps.js';
@@ -42,7 +44,6 @@ app.whenReady().then(() => {
   // Enable getDisplayMedia() in renderer by providing screen sources
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
     desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
-      // Provide the first screen source (primary display)
       const screenSource = sources.find(s => s.id.startsWith('screen:')) || sources[0];
       if (screenSource) {
         callback({ video: screenSource, audio: 'loopback' });
@@ -118,15 +119,16 @@ ipcMain.handle('get-desktop-sources', async () => {
   }));
 });
 
+// ─── Streaming: append each chunk to the temp file on disk immediately ───
 ipcMain.handle('save-chunk', async (event, { meetingId, buffer }) => {
   const dir = getRecordingsDir();
-  const filePath = path.join(dir, `meeting_${meetingId}.webm`);
-  fs.appendFileSync(filePath, Buffer.from(buffer));
+  const tempPath = path.join(dir, `temp_meeting_${meetingId}.webm`);
+  fs.appendFileSync(tempPath, Buffer.from(buffer));
 
   // Trigger transcription asynchronously
   transcribeChunk(meetingId, buffer);
 
-  return filePath;
+  return tempPath;
 });
 
 ipcMain.handle('start-meeting', async (event, { title }) => {
@@ -137,7 +139,7 @@ ipcMain.handle('start-meeting', async (event, { title }) => {
   const meetingId = Date.now();
 
   const dir = getRecordingsDir();
-  const tempPath = path.join(dir, `meeting_${meetingId}.webm`);
+  const tempPath = path.join(dir, `temp_meeting_${meetingId}.webm`);
 
   const stmt = db.prepare('INSERT INTO Meetings (title, date, video_file_path) VALUES (?, ?, ?)');
   const info = stmt.run(title || 'Untitled Meeting', dateStr, tempPath);
@@ -145,11 +147,12 @@ ipcMain.handle('start-meeting', async (event, { title }) => {
   return { meetingId, dbId: info.lastInsertRowid, tempPath };
 });
 
+// ─── Stop meeting: ffmpeg metadata fix, rename, cleanup ───
 ipcMain.handle('stop-meeting', async (event, { meetingId, dbId, startTime, title }) => {
   const { getDB } = await import('./db.js');
   const db = getDB();
   const dir = getRecordingsDir();
-  const tempPath = path.join(dir, `meeting_${meetingId}.webm`);
+  const tempPath = path.join(dir, `temp_meeting_${meetingId}.webm`);
 
   // Build final filename: YYYY-MM-DD-HH-MM-SS-DURATION-TITLE.webm
   const start = new Date(startTime);
@@ -163,9 +166,19 @@ ipcMain.handle('stop-meeting', async (event, { meetingId, dbId, startTime, title
   const finalName = `${datePrefix}-${durationStr}-${safeTitle}.webm`;
   const finalPath = path.join(dir, finalName);
 
-  // Rename temp file to final
+  // Use ffmpeg to remux the temp file — fixes duration metadata without transcoding
   if (fs.existsSync(tempPath)) {
-    fs.renameSync(tempPath, finalPath);
+    try {
+      // Force OS to flush all buffered writes to disk before ffmpeg reads the file
+      await fsyncFile(tempPath);
+      await runFFmpegRemux(tempPath, finalPath);
+      // Delete the temp file after successful remux
+      fs.unlinkSync(tempPath);
+    } catch (err) {
+      console.error('FFmpeg remux failed, falling back to direct rename:', err);
+      // Fallback: just rename if ffmpeg is not available
+      fs.renameSync(tempPath, finalPath);
+    }
   }
 
   // Update DB record
@@ -180,9 +193,48 @@ ipcMain.handle('get-meetings', async () => {
   return db.prepare('SELECT * FROM Meetings ORDER BY date DESC').all();
 });
 
+// ─── Helpers ───
+
 function getRecordingsDir() {
   const documentsDir = app.getPath('documents');
   const dir = path.join(documentsDir, 'AgentZero', 'Recordings');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/**
+ * Force the OS to flush all buffered writes for a file to disk.
+ * Prevents ffmpeg from reading a partially-written file.
+ */
+function fsyncFile(filePath) {
+  return new Promise((resolve, reject) => {
+    fs.open(filePath, 'r+', (openErr, fd) => {
+      if (openErr) return reject(openErr);
+      fs.fsync(fd, (syncErr) => {
+        fs.close(fd, (closeErr) => {
+          if (syncErr) return reject(syncErr);
+          if (closeErr) return reject(closeErr);
+          resolve();
+        });
+      });
+    });
+  });
+}
+
+/**
+ * Remux a webm file using ffmpeg to fix duration metadata.
+ * Uses `-c copy` so it's near-instant (no transcoding).
+ */
+function runFFmpegRemux(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    // ffmpegPath is the absolute path to the bundled ffmpeg binary
+    const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -c copy "${outputPath}"`;
+    exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
+      if (error) {
+        reject(error);
+      } else {
+        resolve({ stdout, stderr });
+      }
+    });
+  });
 }
