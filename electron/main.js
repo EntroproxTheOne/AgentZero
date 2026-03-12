@@ -222,13 +222,28 @@ function fsyncFile(filePath) {
 }
 
 /**
+ * Resolve the correct ffmpeg binary path for both dev and packaged builds.
+ *
+ * electron-builder packs the app into app.asar. Executables inside ASAR
+ * cannot be spawned by the OS. The asarUnpack config tells electron-builder
+ * to copy ffmpeg-static into app.asar.unpacked/ alongside the archive.
+ * We replace 'app.asar' with 'app.asar.unpacked' so exec() can find it.
+ */
+function getFFmpegBinaryPath() {
+  if (app.isPackaged) {
+    return ffmpegPath.replace('app.asar', 'app.asar.unpacked');
+  }
+  return ffmpegPath;
+}
+
+/**
  * Remux a webm file using ffmpeg to fix duration metadata.
  * Uses `-c copy` so it's near-instant (no transcoding).
  */
 function runFFmpegRemux(inputPath, outputPath) {
   return new Promise((resolve, reject) => {
-    // ffmpegPath is the absolute path to the bundled ffmpeg binary
-    const cmd = `"${ffmpegPath}" -y -i "${inputPath}" -c copy "${outputPath}"`;
+    const binary = getFFmpegBinaryPath();
+    const cmd = `"${binary}" -y -i "${inputPath}" -c copy "${outputPath}"`;
     exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
       if (error) {
         reject(error);
