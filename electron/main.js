@@ -26,10 +26,11 @@ function createWindow() {
     backgroundColor: '#ffffff',
   });
 
-  if (process.env.VITE_DEV_SERVER_URL || process.env.NODE_ENV !== 'production') {
-    mainWindow.loadURL('http://localhost:5173');
-  } else {
+  if (app.isPackaged) {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
+  } else {
+    const url = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+    mainWindow.loadURL(url);
   }
 }
 
