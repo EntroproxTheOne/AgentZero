@@ -17,4 +17,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   windowMinimize: () => ipcRenderer.send('window-minimize'),
   windowMaximize: () => ipcRenderer.send('window-maximize'),
   windowClose: () => ipcRenderer.send('window-close'),
+  // ── Transcription ──────────────────────────────────────────────────────────
+  // Start the Deepgram session for a given meeting
+  startTranscription: (data) => ipcRenderer.invoke('start-transcription', data),
+  // Stop the Deepgram session and save JSON transcript
+  stopTranscription: (data) => ipcRenderer.invoke('stop-transcription', data),
+  // Send a raw 2-ch interleaved PCM ArrayBuffer (zero-copy transfer)
+  // buffer is both IN the message object AND in the transfer list so Electron
+  // can deliver it zero-copy while main.js reads it from message.buffer
+  sendAudioChunk: (meetingId, buffer) =>
+    ipcRenderer.send('send-audio-chunk', { meetingId, buffer }),
+  // Subscribe to live transcript entries pushed from main process
+  onTranscriptEntry: (callback) =>
+    ipcRenderer.on('transcript-entry', (_event, entry) => callback(entry)),
+  // Unsubscribe (call on component unmount)
+  offTranscriptEntry: () =>
+    ipcRenderer.removeAllListeners('transcript-entry'),
+  log: (level, ...args) => ipcRenderer.send('log-from-renderer', level, ...args),
 });

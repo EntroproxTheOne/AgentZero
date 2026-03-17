@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { app, BrowserWindow, ipcMain, desktopCapturer, session } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -5,7 +6,7 @@ import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
 import { initDB } from './db.js';
-import { transcribeChunk } from './transcriber.js';
+import { transcribeChunk, startTranscription, sendChunk, stopTranscription } from './transcriber.js';
 import { detectMeetingApps } from './meetingApps.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -191,6 +192,33 @@ ipcMain.handle('get-meetings', async () => {
   const { getDB } = await import('./db.js');
   const db = getDB();
   return db.prepare('SELECT * FROM Meetings ORDER BY date DESC').all();
+});
+
+// ─── Live Transcription IPC ───────────────────────────────────────────────────
+
+// Start a Deepgram session for this meeting
+ipcMain.handle('start-transcription', async (_event, { meetingId }) => {
+  await startTranscription(meetingId, mainWindow);
+});
+
+// Receive zero-copy PCM ArrayBuffer from renderer via postMessage
+// ipcRenderer.postMessage sends: message={meetingId}, transfer=[buffer]
+// In main, the event.data contains both the message object and
+// Electron delivers postMessage via a special MessageEvent on the channel
+ipcMain.on('send-audio-chunk', (_event, message) => {
+  const { meetingId, buffer } = message;
+  // buffer might be an ArrayBuffer or a Buffer (depending on IPC serialization)
+  if (buffer) {
+    sendChunk(meetingId, buffer);
+  }
+});
+
+ipcMain.on('log-from-renderer', (_event, level, ...args) => {
+  console.log(`[Renderer-${level}]`, ...args);
+});
+
+ipcMain.handle('stop-transcription', async (_event, { meetingId, dbId, finalName }) => {
+  await stopTranscription(meetingId, dbId, finalName);
 });
 
 // ─── Helpers ───

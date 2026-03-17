@@ -1050,52 +1050,33 @@
 /* ═══════════════════════════════════════════
    AUDIO WAVEFORM
    ═══════════════════════════════════════════ */
-.waveform-container {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.06), rgba(239, 68, 68, 0.02));
-  border-bottom: 1px solid var(--border-subtle);
-  flex-shrink: 0;
-}
-.waveform-status {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  font-weight: 700;
-  color: var(--danger);
-  letter-spacing: 0.3px;
-  white-space: nowrap;
-}
 .waveform-dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--danger);
+  background: var(--accent-dark);
   animation: pulse 1.5s ease-in-out infinite;
 }
-.waveform-bars {
+.waveform-bars-mini {
   display: flex;
   align-items: center;
   gap: 2px;
-  flex: 1;
-  height: 20px;
+  height: 10px;
 }
-.waveform-bar {
-  flex: 1;
-  min-width: 2px;
-  max-width: 4px;
+.waveform-bar-mini {
+  width: 2px;
+  height: 100%;
+  background: var(--accent-dark);
   border-radius: 2px;
-  background: var(--danger);
-  opacity: 0.5;
-  animation: waveAnim 1.2s ease-in-out infinite alternate;
+  animation: waveMini 1s ease-in-out infinite;
 }
-@keyframes waveAnim {
-  0% { height: 4px; opacity: 0.3; }
-  50% { height: 16px; opacity: 0.7; }
-  100% { height: 6px; opacity: 0.4; }
+@keyframes waveMini {
+  0%, 100% { height: 3px; }
+  50% { height: 10px; }
+}
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.8); opacity: 0.5; }
 }
 
 /* ═══════════════════════════════════════════
@@ -1119,7 +1100,23 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--accent-dark);
+  display: flex;
+  align-items: center;
 }
+/* User's own mic channel — accent green */
+.transcript-speaker-you {
+  color: var(--accent-dark);
+}
+/* Meeting channel speakers — neutral gray */
+.transcript-entry + .transcript-entry > .transcript-meta > .transcript-speaker:not(.transcript-speaker-you) {
+  color: var(--text-secondary);
+}
+/* Interim (in-progress) text — dimmed and italic */
+.transcript-interim .transcript-text {
+  opacity: 0.5;
+  font-style: italic;
+}
+
 .transcript-time {
   font-size: 11px;
   color: var(--text-muted);
@@ -1632,3 +1629,118 @@
   background: var(--bg-hover);
   color: var(--text-primary);
 }
+
+/* ═══════════════════════════════════════════
+   LIVE TRANSCRIPT COMPONENT
+   ═══════════════════════════════════════════ */
+.transcript-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.transcript-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.transcript-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.transcript-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-dark);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.transcript-scroll-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.transcript-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.transcript-entry-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.transcript-source-tag {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.tag-you {
+  background: var(--accent-glow);
+  color: var(--accent-dark);
+}
+
+.tag-meeting {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.transcript-time {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.transcript-speaker {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.transcript-text {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  word-wrap: break-word;
+}
+
+.transcript-text-interim {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Waveform Animation moved up */
+

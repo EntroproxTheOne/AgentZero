@@ -16,28 +16,29 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
   const [detecting, setDetecting] = useState(false);
   const [noAppDetected, setNoAppDetected] = useState(false);
 
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const meetingIdRef = useRef<number>(0);
-  const dbIdRef = useRef<number>(0);
-  const startTimeRef = useRef<number>(0);
-  const titleRef = useRef<string>('');
+  // ── Video/audio archival pipeline ──────────────────────────────────────────
+  const mediaRecorderRef   = useRef<MediaRecorder | null>(null);
+  const pendingSavesRef    = useRef<Promise<void>[]>([]);
+
+  // ── Meeting metadata ────────────────────────────────────────────────────────
+  const meetingIdRef  = useRef<number>(0);
+  const dbIdRef       = useRef<number>(0);
+  const startTimeRef  = useRef<number>(0);
+  const titleRef      = useRef<string>('');
   const isStoppingRef = useRef(false);
-  // Track every in-flight saveChunk IPC call so we can await them all before stopMeeting
-  const pendingSavesRef = useRef<Promise<void>[]>([]);
+
+  // ── Live transcription pipeline (PCM via AudioWorklet) ──────────────────────
+  const audioCtxRef     = useRef<AudioContext | null>(null);
+  const workletNodeRef  = useRef<AudioWorkletNode | null>(null);
 
   /* ─── Click Handler ─── */
   const handleRecordClick = async () => {
-    if (isRecording) {
-      await stopRecording();
-      return;
-    }
+    if (isRecording) { await stopRecording(); return; }
 
     setDetecting(true);
     setNoAppDetected(false);
     try {
-      const apps = window.electronAPI
-        ? await window.electronAPI.detectMeetingApps()
-        : [];
+      const apps = window.electronAPI ? await window.electronAPI.detectMeetingApps() : [];
       setDetectedApps(apps);
       if (apps.length > 0) {
         titleRef.current = `${apps[0]} Meeting`;
@@ -55,96 +56,71 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
     setShowConsent(true);
   };
 
-  const handleConsentAccept = async () => {
-    setShowConsent(false);
-    await startRecording();
+  const handleConsentAccept = async () => { 
+    window.electronAPI?.log('info', 'Consent accepted, starting recording...');
+    setShowConsent(false); 
+    await startRecording(); 
   };
-
   const handleConsentCancel = () => {
+    window.electronAPI?.log('info', 'Consent cancelled');
     setShowConsent(false);
   };
 
   /* ─── Start Recording ─── */
   const startRecording = async () => {
     try {
+      // 1. Register meeting in backend
       if (window.electronAPI) {
         const result = await window.electronAPI.startMeeting({ title: titleRef.current });
         meetingIdRef.current = result.meetingId;
-        dbIdRef.current = result.dbId;
+        dbIdRef.current      = result.dbId;
       } else {
         meetingIdRef.current = Date.now();
       }
       startTimeRef.current = Date.now();
 
+      // 2. Acquire display stream (meeting audio + video)
       let displayStream: MediaStream;
-
       if (window.electronAPI && detectedApps.length > 0) {
         const sources = await window.electronAPI.getDesktopSources();
-
         const matchingSource = sources.find((s: any) => {
           const srcName = (s.name || '').toLowerCase();
           return detectedApps.some((app) => {
-            const appLower = app.toLowerCase();
-            if (srcName.includes(appLower)) return true;
-            if (appLower.includes('zoom') && srcName.includes('zoom')) return true;
-            if (appLower.includes('teams') && srcName.includes('teams')) return true;
-            if (appLower.includes('webex') && srcName.includes('webex')) return true;
-            if (appLower.includes('google meet') && srcName.includes('meet')) return true;
-            if (appLower.includes('skype') && srcName.includes('skype')) return true;
-            if (appLower.includes('discord') && srcName.includes('discord')) return true;
-            if (appLower.includes('slack') && srcName.includes('slack')) return true;
-            if (appLower.includes('bluejeans') && srcName.includes('bluejeans')) return true;
-            if (appLower.includes('gotomeeting') && srcName.includes('gotomeeting')) return true;
-            return false;
+            const a = app.toLowerCase();
+            return srcName.includes(a)
+              || (a.includes('zoom') && srcName.includes('zoom'))
+              || (a.includes('teams') && srcName.includes('teams'))
+              || (a.includes('webex') && srcName.includes('webex'))
+              || (a.includes('google meet') && srcName.includes('meet'))
+              || (a.includes('skype') && srcName.includes('skype'))
+              || (a.includes('discord') && srcName.includes('discord'))
+              || (a.includes('slack') && srcName.includes('slack'));
           });
         });
 
-        if (matchingSource) {
-          displayStream = await (navigator.mediaDevices as any).getUserMedia({
-            audio: {
-              mandatory: { chromeMediaSource: 'desktop' },
-            },
-            video: {
-              mandatory: {
-                chromeMediaSource: 'desktop',
-                chromeMediaSourceId: matchingSource.id,
-              },
-            },
-          });
-        } else {
-          displayStream = await navigator.mediaDevices.getDisplayMedia({
-            video: true,
-            audio: true,
-          });
-        }
+        displayStream = matchingSource
+          ? await (navigator.mediaDevices as any).getUserMedia({
+              audio: { mandatory: { chromeMediaSource: 'desktop' } },
+              video: { mandatory: { chromeMediaSource: 'desktop', chromeMediaSourceId: matchingSource.id } },
+            })
+          : await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       } else {
-        displayStream = await navigator.mediaDevices.getDisplayMedia({
-          video: true,
-          audio: true,
-        });
+        displayStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       }
 
-      // Capture microphone
-      const voiceStream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
-        video: false,
-      });
+      // 3. Acquire microphone stream
+      const voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
-      const tracks = [
+      // ── WebM archival pipeline (unchanged) ──────────────────────────────────
+      const combinedStream = new MediaStream([
         ...displayStream.getVideoTracks(),
         ...displayStream.getAudioTracks(),
         ...voiceStream.getAudioTracks(),
-      ];
-      const combinedStream = new MediaStream(tracks);
-
-      const mediaRecorder = new MediaRecorder(combinedStream, {
-        mimeType: 'video/webm; codecs=vp9',
-      });
+      ]);
+      const mediaRecorder = new MediaRecorder(combinedStream, { mimeType: 'video/webm; codecs=vp9' });
       mediaRecorderRef.current = mediaRecorder;
       isStoppingRef.current = false;
 
-      // Stream every chunk to disk immediately via IPC — no in-memory accumulation.
-      // Each save promise is tracked so stopRecording can wait for ALL of them.
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0 && window.electronAPI) {
           const saveTask = (async () => {
@@ -157,69 +133,157 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
           pendingSavesRef.current.push(saveTask);
         }
       };
-
-      // Emit a chunk every 1000ms for real-time disk streaming
       mediaRecorder.start(1000);
-      setIsRecording(true);
 
+      // ── Live transcription — parallel PCM pipeline via AudioWorklet ─────────
+      await startPCMPipeline(voiceStream, displayStream, meetingIdRef.current);
+
+      setIsRecording(true);
       onRecordingStarted?.(combinedStream, stopRecording, titleRef.current);
 
       displayStream.getVideoTracks()[0].onended = () => {
+        window.electronAPI?.log('warn', 'Display stream track ended naturally');
         stopRecording();
       };
-    } catch (err) {
+
+    } catch (err: any) {
+      window.electronAPI?.log('error', 'Error in startRecording:', err.message || err);
       console.error('Error starting recording:', err);
+    }
+  };
+
+  /**
+   * Create an AudioContext at 16 kHz, load the PCM AudioWorklet,
+   * connect mic (input 0) and meeting audio (input 1) to the worklet node,
+   * and forward interleaved PCM ArrayBuffers to the main process zero-copy.
+   */
+  const startPCMPipeline = async (
+    micStream: MediaStream,
+    meetingStream: MediaStream,
+    meetingId: number,
+  ) => {
+    if (!window.electronAPI) return;
+
+    try {
+      // AudioContext at native 16 kHz — avoids resampling in the worklet
+      const audioCtx = new AudioContext({ sampleRate: 16000 });
+      audioCtxRef.current = audioCtx;
+
+      window.electronAPI?.log('info', `AudioContext created. State: ${audioCtx.state}`);
+
+      if (audioCtx.state === 'suspended') {
+        window.electronAPI?.log('info', 'AudioContext is suspended, resuming...');
+        await audioCtx.resume();
+        window.electronAPI?.log('info', `AudioContext state after resume: ${audioCtx.state}`);
+      }
+
+      // Load the worklet module (public/pcm-processor.js served from Vite root)
+      await audioCtx.audioWorklet.addModule('/pcm-processor.js');
+
+      // One node with 2 inputs, 0 outputs
+      const workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor', {
+        numberOfInputs: 2,
+        numberOfOutputs: 0,
+      });
+      workletNodeRef.current = workletNode;
+
+      // Connect mic audio → worklet input 0
+      const micSource = audioCtx.createMediaStreamSource(micStream);
+      micSource.connect(workletNode, 0, 0);
+
+      // Connect meeting audio → worklet input 1 (only if audio tracks exist)
+      const meetingAudioTracks = meetingStream.getAudioTracks();
+      if (meetingAudioTracks.length > 0) {
+        const meetingSource = audioCtx.createMediaStreamSource(meetingStream);
+        meetingSource.connect(workletNode, 0, 1);
+      }
+
+      // Open the Deepgram WebSocket on the main process side
+      await window.electronAPI.startTranscription({ meetingId });
+
+      // Forward each ~250ms PCM batch to main (zero-copy ArrayBuffer transfer)
+      let firstChunkSent = false;
+      workletNode.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
+        if (!firstChunkSent) {
+          window.electronAPI?.log('info', `First PCM chunk received from worklet. Size: ${e.data.byteLength}`);
+          firstChunkSent = true;
+        }
+        if (e.data instanceof ArrayBuffer && e.data.byteLength > 0) {
+          window.electronAPI?.sendAudioChunk(meetingId, e.data);
+        }
+      };
+
+      window.electronAPI?.log('info', 'PCM pipeline started successfully');
+
+    } catch (err: any) {
+      window.electronAPI?.log('error', '[PCMPipeline] Error:', err.message || err);
+      console.error('[PCMPipeline] Error:', err);
     }
   };
 
   /* ─── Stop Recording ─── */
   const stopRecording = async () => {
+    const stack = new Error().stack;
+    window.electronAPI?.log('info', `stopRecording called. isStopping: ${isStoppingRef.current}. Stack: ${stack?.substring(0, 300)}`);
     if (isStoppingRef.current) return;
     isStoppingRef.current = true;
 
     const recorder = mediaRecorderRef.current;
-    if (!recorder) {
-      isStoppingRef.current = false;
-      return;
+    if (!recorder) { 
+      window.electronAPI?.log('warn', 'stopRecording called but mediaRecorderRef is null');
+      isStoppingRef.current = false; 
+      return; 
     }
 
-    // Wait for recorder to fully stop (onstop always fires after final ondataavailable)
+    // Stop the WebM recorder and wait for its final chunk
     await new Promise<void>((resolve) => {
       recorder.onstop = () => resolve();
-      try {
-        recorder.stop();
-      } catch {
-        resolve();
-      }
+      try { recorder.stop(); } catch { resolve(); }
     });
 
-    // Await every in-flight saveChunk IPC call (including the final chunk).
-    // This guarantees the last chunk is written to disk before we tell
-    // the backend to run ffmpeg on the file.
+    // Ensure all in-flight saveChunk IPC calls have completed
     await Promise.all(pendingSavesRef.current);
     pendingSavesRef.current = [];
 
     // Stop all media tracks
     recorder.stream.getTracks().forEach((t) => t.stop());
     mediaRecorderRef.current = null;
-    setIsRecording(false);
 
+    // Stop the PCM pipeline
+    workletNodeRef.current?.port.close();
+    workletNodeRef.current?.disconnect();
+    workletNodeRef.current = null;
+    await audioCtxRef.current?.close();
+    audioCtxRef.current = null;
+
+    setIsRecording(false);
     onRecordingStopped?.();
 
-    // Tell backend to finalize the file (ffmpeg metadata fix + rename)
     if (window.electronAPI) {
       try {
-        const result = await window.electronAPI.stopMeeting({
+        // 1. Finalize video file first (ffmpeg remux → seekable webm)
+        // This gives us the final formatted filename: YYYY-MM-DD-HH-MM-SS-DURATION-TITLE.webm
+        const { finalName } = await window.electronAPI.stopMeeting({
           meetingId: meetingIdRef.current,
           dbId: dbIdRef.current,
           startTime: startTimeRef.current,
           title: titleRef.current,
         });
-        console.log('Recording saved:', result.finalName);
+        console.log('Recording saved:', finalName);
+
+        // 2. Finalize transcript with the matching name (replacing .webm with .json)
+        const transcriptName = finalName.replace(/\.webm$/, '.json');
+        await window.electronAPI.stopTranscription({
+          meetingId: meetingIdRef.current,
+          dbId: dbIdRef.current,
+          finalName: transcriptName,
+        });
+        console.log('Transcript saved alongside video.');
       } catch (err) {
-        console.error('Error finalizing recording:', err);
+        console.error('Error during recording finalization:', err);
       }
     }
+
 
     isStoppingRef.current = false;
   };
@@ -228,47 +292,31 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
   return (
     <div className="recorder-container">
       {showConsent && (
-        <ConsentModal
-          detectedApps={detectedApps}
-          onAccept={handleConsentAccept}
-          onCancel={handleConsentCancel}
-        />
+        <ConsentModal detectedApps={detectedApps} onAccept={handleConsentAccept} onCancel={handleConsentCancel} />
       )}
-
       {!isRecording && !showConsent && detectedApps.length > 0 && (
         <div className="detected-banner">
           <MonitorSmartphone size={16} />
           <span>Detected: {detectedApps.join(', ')}</span>
         </div>
       )}
-
       {!isRecording && !showConsent && noAppDetected && (
         <div className="detected-banner detected-banner-warn">
           <AlertCircle size={16} />
           <span>No meeting app detected. You can still record your screen.</span>
         </div>
       )}
-
       <button
         onClick={handleRecordClick}
         disabled={detecting}
         className={`recorder-btn ${isRecording ? 'recorder-btn-stop' : 'recorder-btn-start'} ${detecting ? 'recorder-btn-detecting' : ''}`}
       >
         {detecting ? (
-          <>
-            <div className="recorder-spinner" />
-            Scanning for meetings...
-          </>
+          <><div className="recorder-spinner" />Scanning for meetings...</>
         ) : isRecording ? (
-          <>
-            <div className="recorder-pulse" />
-            Stop Recording
-          </>
+          <><div className="recorder-pulse" />Stop Recording</>
         ) : (
-          <>
-            <Mic size={24} />
-            Start Recording
-          </>
+          <><Mic size={24} />Start Recording</>
         )}
       </button>
       <p className="recorder-hint">

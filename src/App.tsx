@@ -25,6 +25,7 @@ function App() {
   const [showPostMeeting, setShowPostMeeting] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
   const stopFnRef = useRef<(() => Promise<void>) | null>(null);
+  const recordingStartTimeRef = useRef<number>(0);
 
   const navItems: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
@@ -39,13 +40,13 @@ function App() {
   const handleLogout = () => {
     setUser(null);
   };
-
   const handleRecordingStarted = (stream: MediaStream, stopFn: () => Promise<void>, title: string) => {
     setRecordingStream(stream);
     setIsRecording(true);
     setShowPostMeeting(false);
     setMeetingTitle(title);
     stopFnRef.current = stopFn;
+    recordingStartTimeRef.current = Date.now();
   };
 
   const handleRecordingStopped = () => {
@@ -56,6 +57,11 @@ function App() {
   };
 
   const handleStopClick = async () => {
+    // 1-second guard to prevent accidental immediate stops from bubbling/fast re-renders
+    if (Date.now() - recordingStartTimeRef.current < 1000) {
+      console.log('[App] Stop click ignored (too soon after start)');
+      return;
+    }
     if (stopFnRef.current) {
       await stopFnRef.current();
     }

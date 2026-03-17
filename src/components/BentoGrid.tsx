@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import LiveTranscript from './LiveTranscript';
-import type { TranscriptEntry } from './LiveTranscript';
 import JargonExplainer from './JargonExplainer';
 import type { JargonItem } from './JargonExplainer';
 import LiveQuestions from './LiveQuestions';
@@ -20,10 +19,6 @@ interface BentoGridProps {
 /* ─── Component ─── */
 export default function BentoGrid({ stream: _stream, listenerName }: BentoGridProps) {
   /* --- Mock data (will be replaced by Deepgram / Groq later) --- */
-
-  const [transcripts] = useState<TranscriptEntry[]>([
-    { id: 1, speaker: 'System', text: 'Waiting for transcription service…', timestamp: Date.now() },
-  ]);
 
   const [jargonItems] = useState<JargonItem[]>([
     { id: 1, term: 'RAG', explanation: 'Retrieval-Augmented Generation — combines LLM responses with relevant document retrieval.' },
@@ -70,7 +65,7 @@ export default function BentoGrid({ stream: _stream, listenerName }: BentoGridPr
     <div className="bento-grid">
       {/* ── Left Column (40%) ── */}
       <div className="bento-left">
-        <LiveTranscript entries={transcripts} />
+        <LiveTranscript />
         <JargonExplainer items={jargonItems} />
       </div>
 
