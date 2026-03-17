@@ -1,272 +1,270 @@
-/**
- * transcriber.js — Deepgram Nova-3 Multilingual live transcription manager.
- *
- * Uses @deepgram/sdk v5 API:
- *   - createClient / DeepgramClient
- *   - deepgram.listen.live({ ... })   ← v3 API path still valid in v5
- *   - Plain string events: 'open', 'transcript', 'error', 'close'
- *
- * Architecture:
- *  - One Deepgram WebSocket per meeting session (opened on `start-transcription`)
- *  - Receives raw 2-channel interleaved PCM (linear16, 16 kHz) from renderer
- *  - channel 0 = user microphone  → source: "you"
- *  - channel 1 = meeting audio    → source: "meeting" (+ diarize speaker IDs)
- *  - Fires `transcript-entry` events to the renderer window on every is_final result
- *  - On stop: saves all final entries to JSON, updates DB
- */
-
-import path from 'path';
-import fs from 'fs';
-import { app } from 'electron';
+import fs from 'fs/promises';
 import { createRequire } from 'module';
 import { getDB } from './db.js';
 
-// Use CJS require to load @deepgram/sdk — the ESM entrypoint in v5
-// does not re-export DeepgramClient correctly in Electron's Node ESM context.
 const require = createRequire(import.meta.url);
 const { DeepgramClient } = require('@deepgram/sdk');
 
-// Active sessions: Map<meetingId, { connection, entries[], mainWindow }>
 const sessions = new Map();
 
-function getRecordingsDir() {
-  const dir = path.join(app.getPath('documents'), 'AgentZero', 'Recordings');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+
+  return { promise, resolve, reject };
 }
 
-/**
- * Open a Deepgram WebSocket for the given meeting.
- * @param {number} meetingId
- * @param {Electron.BrowserWindow} mainWindow
- */
-export async function startTranscription(meetingId, mainWindow) {
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildPersistedEntry(entry) {
+  const speakerLabel = entry.source === 'you'
+    ? 'You'
+    : entry.speakerId != null
+      ? `Speaker ${entry.speakerId + 1}`
+      : 'Meeting';
+
+  return {
+    timestamp: entry.timestamp,
+    source: entry.source,
+    speakerLabel,
+    speakerId: entry.speakerId,
+    text: entry.transcript,
+    isFinal: true,
+  };
+}
+
+export async function startTranscription(meetingId, { mainWindow, onFinalEntry }) {
   if (sessions.has(meetingId)) return;
 
   const apiKey = process.env.DEEPGRAM_API_KEY;
   if (!apiKey) {
-    console.warn('[Transcriber] DEEPGRAM_API_KEY not set — transcription disabled');
+    console.warn('[Transcriber] DEEPGRAM_API_KEY not set, transcription disabled');
     return;
   }
 
   const deepgram = new DeepgramClient({ apiKey });
-
-  // SDK v5: more robust connection method
-  console.log('[Transcriber] Connecting to Deepgram...');
   const connection = await deepgram.listen.v1.connect({
-    model:           'nova-3',
-    language:        'multi',       // Nova-3 multilingual
-    multichannel:    true,          // transcribe ch0 and ch1 independently
-    channels:        2,             // ch0=mic, ch1=meeting
-    encoding:        'linear16',
-    sample_rate:     16000,
-    diarize:         true,
-    smart_format:    true,
+    model: 'nova-3',
+    language: 'multi',
+    multichannel: true,
+    channels: 2,
+    encoding: 'linear16',
+    sample_rate: 16000,
+    diarize: true,
+    smart_format: true,
     interim_results: true,
-    endpointing:     500,
+    endpointing: 500,
   });
 
   if (!connection) {
-    console.error('[Transcriber] Failed to create Deepgram connection');
-    return;
+    throw new Error('Failed to create Deepgram connection');
   }
 
-  const entries = [];
-  let keepAlive;
-  let hasReceivedResponse = false;
+  const closeDeferred = createDeferred();
+  const session = {
+    meetingId,
+    connection,
+    mainWindow,
+    onFinalEntry,
+    keepAlive: null,
+    entries: [],
+    chunkQueue: [],
+    firstChunkReceived: false,
+    lastResultAt: 0,
+    finalizeSentAt: null,
+    closeDeferred,
+    isOpen: false,
+    firstMessageLogged: false,
+    firstFinalLogged: false,
+    firstQueuedChunkLogged: false,
+  };
 
-  const handleDeepgramMessage = (data) => {
-    if (!hasReceivedResponse) {
-      console.log(`[Transcriber] First data received from Deepgram for meeting ${meetingId}: ${data.type}`);
-      hasReceivedResponse = true;
+  sessions.set(meetingId, session);
+
+  const handleMessage = (data) => {
+    if (!session.firstMessageLogged) {
+      console.log(`[Deepgram] First message received for meeting ${meetingId}: ${data?.type ?? 'Unknown'}`);
+      session.firstMessageLogged = true;
     }
 
-    // Log Metadata for confirmation
-    if (data.type === 'Metadata') {
-      console.log('[Transcriber] Metadata received:', JSON.stringify(data));
+    if (data?.type === 'Metadata') {
       return;
     }
 
-    if (data.type !== 'Results' || !data.channel) return;
+    if (data?.type !== 'Results' || !data.channel) {
+      return;
+    }
 
-    const isFinal     = data.is_final;
-    const channelIdx  = data.channel_index?.[0] ?? 0;
-    const source      = channelIdx === 0 ? 'you' : 'meeting';
-    const alt         = data.channel?.alternatives?.[0];
-    if (!alt) return;
+    session.lastResultAt = Date.now();
 
-    const transcript = alt.transcript;
-    if (!transcript || transcript.trim() === '') return;
+    const isFinal = Boolean(data.is_final);
+    const channelIndex = data.channel_index?.[0] ?? 0;
+    const source = channelIndex === 0 ? 'you' : 'meeting';
+    const alternative = data.channel?.alternatives?.[0];
+    if (!alternative?.transcript?.trim()) {
+      return;
+    }
 
-    const words       = alt.words ?? [];
-    const speakerId   = (source === 'meeting' && words[0]?.speaker != null)
-      ? words[0].speaker
+    const speakerId = source === 'meeting' && alternative.words?.[0]?.speaker != null
+      ? alternative.words[0].speaker
       : null;
 
     const entry = {
       source,
       speakerId,
-      transcript,
+      transcript: alternative.transcript.trim(),
       timestamp: new Date().toLocaleTimeString('en-US', { hour12: false }),
       isFinal,
       interim: !isFinal,
     };
 
-    // Push to renderer for live display
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('transcript-entry', entry);
+    if (session.mainWindow && !session.mainWindow.isDestroyed()) {
+      session.mainWindow.webContents.send('transcript-entry', entry);
     }
 
-    // Accumulate final entries for saving
-    if (isFinal) {
-      const speakerLabel = source === 'you'
-        ? 'You'
-        : speakerId != null
-          ? `Speaker ${speakerId + 1}`
-          : 'Meeting';
-
-      entries.push({
-        timestamp:   entry.timestamp,
-        source, 
-        speakerLabel,
-        speakerId,
-        text:        transcript,
-        isFinal:     true,
-      });
+    if (!isFinal) {
+      return;
     }
+
+    const persistedEntry = buildPersistedEntry(entry);
+    session.entries.push(persistedEntry);
+    if (!session.firstFinalLogged) {
+      console.log(`[Deepgram] First final transcript entry received for meeting ${meetingId}`);
+      session.firstFinalLogged = true;
+    }
+    session.onFinalEntry?.(persistedEntry, [...session.entries]);
   };
 
-  // SDK v5 events ─────────────────────────────────────────────────────────
   connection.on('open', () => {
-    console.log(`[Transcriber] Deepgram connection open for meeting ${meetingId}`);
-    
-    // Flush any chunks queued before connection was open
-    const session = sessions.get(meetingId);
-    if (session && session.chunkQueue.length > 0) {
-      console.log(`[Transcriber] Flushing ${session.chunkQueue.length} queued chunks...`);
-      while (session.chunkQueue.length > 0) {
-        const chunk = session.chunkQueue.shift();
-        connection.sendMedia(chunk);
-      }
+    session.isOpen = true;
+    console.log(`[Deepgram] Socket open for meeting ${meetingId}`);
+    while (session.chunkQueue.length > 0) {
+      connection.sendMedia(session.chunkQueue.shift());
     }
-    
-    // Start keep-alive interval
-    if (keepAlive) clearInterval(keepAlive);
-    keepAlive = setInterval(() => {
-      if (connection.readyState === 1) { // OPEN
+
+    if (session.keepAlive) clearInterval(session.keepAlive);
+    session.keepAlive = setInterval(() => {
+      if (connection.readyState === 1) {
         connection.sendKeepAlive({ type: 'KeepAlive' });
       }
     }, 3000);
   });
 
-  // Listen to the primary 'message' event for all data
-  connection.on('message', handleDeepgramMessage);
-
-  connection.on('error', (err) => {
-    console.error('[Transcriber] Deepgram error:', err);
+  connection.on('message', handleMessage);
+  connection.on('error', (error) => {
+    console.error('[Transcriber] Deepgram error:', error);
   });
-
   connection.on('close', () => {
-    console.log(`[Transcriber] Deepgram connection closed for meeting ${meetingId}`);
-    if (keepAlive) clearInterval(keepAlive);
+    session.isOpen = false;
+    if (session.keepAlive) clearInterval(session.keepAlive);
+    session.closeDeferred.resolve();
   });
 
-  // CRITICAL: In SDK v5, we must explicitly call connect() to start the stream
   connection.connect();
-
-  sessions.set(meetingId, { 
-    connection, 
-    entries, 
-    mainWindow, 
-    keepAlive,
-    firstChunkReceived: false,
-    chunkQueue: [] 
-  });
+  await connection.waitForOpen();
 }
 
-/**
- * Send raw 2-channel interleaved PCM buffer to Deepgram.
- * @param {number} meetingId
- * @param {ArrayBuffer} buffer  — Int16 interleaved [mic0, mtg0, mic1, mtg1, ...]
- */
 export function sendChunk(meetingId, buffer) {
-  const session = sessions.get(meetingId);
-  if (!session) {
-    // Silent fail or occasional log to avoid spam
-    return;
-  }
-
-  if (!session.firstChunkReceived) {
-    console.log(`[Transcriber] First audio chunk received for meeting ${meetingId}. Streaming started...`);
-    session.firstChunkReceived = true;
-  }
-
-  try {
-    // SDK v5: handle connection not ready yet (e.g. initial handshake)
-    if (session.connection.readyState === 1) { // OPEN
-      // Flush queue if any (should already be handled by 'open' event, but defensive)
-      while (session.chunkQueue.length > 0) {
-        session.connection.sendMedia(session.chunkQueue.shift());
-      }
-      session.connection.sendMedia(Buffer.from(buffer));
-    } else {
-      // Buffer the chunk briefly while connecting
-      if (session.chunkQueue.length < 50) { // Safety cap (~5-10s of audio)
-        session.chunkQueue.push(Buffer.from(buffer));
-      }
-    }
-  } catch (err) {
-    console.error('[Transcriber] Error sending chunk:', err);
-  }
-}
-
-/**
- * Gracefully close Deepgram and save the transcript JSON.
- * @param {number} meetingId
- * @param {number} dbId
- * @param {string} [finalName]
- */
-export async function stopTranscription(meetingId, dbId, finalName, meetingFolder) {
   const session = sessions.get(meetingId);
   if (!session) return;
 
-  const { connection, entries, keepAlive } = session;
-
-  if (keepAlive) clearInterval(keepAlive);
-
-  try {
-    connection.close();
-  } catch {
-    // already closed
+  if (!session.firstChunkReceived) {
+    session.firstChunkReceived = true;
   }
 
-  // Give Deepgram a moment to flush any final results
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const chunkBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
+  if (session.connection.readyState === 1 && session.isOpen) {
+    while (session.chunkQueue.length > 0) {
+      session.connection.sendMedia(session.chunkQueue.shift());
+    }
+    session.connection.sendMedia(chunkBuffer);
+    return;
+  }
 
-  if (entries.length > 0) {
-    const fileName = finalName || `transcript_${meetingId}.json`;
-    const filePath = meetingFolder 
-      ? path.join(meetingFolder, fileName)
-      : path.join(getRecordingsDir(), fileName);
-      
-    fs.writeFileSync(filePath, JSON.stringify(entries, null, 2), 'utf-8');
-    console.log(`[Transcriber] Transcript saved: ${filePath}`);
+  if (session.chunkQueue.length < 50) {
+    if (!session.firstQueuedChunkLogged) {
+      console.log(`[Deepgram] Audio chunk queued before socket open for meeting ${meetingId}`);
+      session.firstQueuedChunkLogged = true;
+    }
+    session.chunkQueue.push(chunkBuffer);
+  }
+}
 
+export function getTranscriptEntries(meetingId) {
+  return sessions.get(meetingId)?.entries ?? [];
+}
+
+export async function stopTranscription(meetingId, { dbId, transcriptPath }) {
+  const session = sessions.get(meetingId);
+  if (!session) {
+    return { transcriptPath: null, entries: [] };
+  }
+
+  if (session.keepAlive) clearInterval(session.keepAlive);
+
+  if (session.connection.readyState === 1 && session.isOpen) {
+    try {
+      session.finalizeSentAt = Date.now();
+      console.log(`[Deepgram] Finalize sent for meeting ${meetingId}`);
+      session.connection.sendFinalize({ type: 'Finalize' });
+    } catch (error) {
+      console.warn('[Transcriber] Failed to send finalize:', error);
+    }
+  }
+
+  const finalizeStart = Date.now();
+  let quietPeriodReached = false;
+
+  while (Date.now() - finalizeStart < 5000) {
+    const timeSinceLastResult = session.lastResultAt === 0
+      ? Date.now() - finalizeStart
+      : Date.now() - session.lastResultAt;
+
+    if (timeSinceLastResult >= 1200) {
+      quietPeriodReached = true;
+      break;
+    }
+
+    await wait(100);
+  }
+
+  if (!quietPeriodReached) {
+    console.warn(`[Transcriber] Finalize timeout reached for meeting ${meetingId}, closing connection`);
+  }
+
+  try {
+    session.connection.close();
+  } catch {
+    // ignored
+  }
+
+  await Promise.race([
+    session.closeDeferred.promise,
+    wait(2000),
+  ]);
+
+  if (transcriptPath) {
+    await fs.writeFile(transcriptPath, JSON.stringify(session.entries, null, 2), 'utf8');
+    console.log(`[Deepgram] Transcript saved for meeting ${meetingId}: ${transcriptPath}`);
     try {
       const db = getDB();
       db.prepare('UPDATE Meetings SET transcript_path = ? WHERE id = ?')
-        .run(filePath, dbId);
-    } catch (err) {
-      console.error('[Transcriber] DB update error:', err);
+        .run(transcriptPath, dbId);
+    } catch (error) {
+      console.error('[Transcriber] Failed to update transcript path:', error);
     }
   }
 
   sessions.delete(meetingId);
-}
 
-/**
- * Stub — WebM chunks are NOT sent to Deepgram (raw PCM pipeline handles transcription).
- */
-export async function transcribeChunk(_meetingId, _buffer) {
-  // no-op
+  return {
+    transcriptPath,
+    entries: session.entries,
+  };
 }

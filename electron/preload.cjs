@@ -2,11 +2,15 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getDesktopSources: () => ipcRenderer.invoke('get-desktop-sources'),
-  saveChunk: (data) => ipcRenderer.invoke('save-chunk', data),
+  sendVideoChunk: (meetingId, buffer) =>
+    ipcRenderer.send('save-chunk-buffer', { meetingId, buffer }),
+  flushMeetingWrites: (data) => ipcRenderer.invoke('flush-meeting-writes', data),
   detectMeetingApps: () => ipcRenderer.invoke('detect-meeting-apps'),
   startMeeting: (data) => ipcRenderer.invoke('start-meeting', data),
   stopMeeting: (data) => ipcRenderer.invoke('stop-meeting', data),
   getMeetings: () => ipcRenderer.invoke('get-meetings'),
+  getMeetingArtifacts: (data) => ipcRenderer.invoke('get-meeting-artifacts', data),
+  exportMeetingMom: (data) => ipcRenderer.invoke('export-meeting-mom', data),
   openInExplorer: (filePath) => ipcRenderer.invoke('open-in-explorer', filePath),
   // Auth
   register: (data) => ipcRenderer.invoke('auth-register', data),
@@ -22,16 +26,20 @@ contextBridge.exposeInMainWorld('electronAPI', {
   startTranscription: (data) => ipcRenderer.invoke('start-transcription', data),
   // Stop the Deepgram session and save JSON transcript
   stopTranscription: (data) => ipcRenderer.invoke('stop-transcription', data),
-  // Send a raw 2-ch interleaved PCM ArrayBuffer (zero-copy transfer)
-  // buffer is both IN the message object AND in the transfer list so Electron
-  // can deliver it zero-copy while main.js reads it from message.buffer
   sendAudioChunk: (meetingId, buffer) =>
     ipcRenderer.send('send-audio-chunk', { meetingId, buffer }),
-  // Subscribe to live transcript entries pushed from main process
   onTranscriptEntry: (callback) =>
     ipcRenderer.on('transcript-entry', (_event, entry) => callback(entry)),
-  // Unsubscribe (call on component unmount)
   offTranscriptEntry: () =>
     ipcRenderer.removeAllListeners('transcript-entry'),
+  onLiveInsights: (callback) =>
+    ipcRenderer.on('live-insights', (_event, payload) => callback(payload)),
+  offLiveInsights: () =>
+    ipcRenderer.removeAllListeners('live-insights'),
+  onMeetingArtifactsUpdated: (callback) =>
+    ipcRenderer.on('meeting-artifacts-updated', (_event, payload) => callback(payload)),
+  offMeetingArtifactsUpdated: () =>
+    ipcRenderer.removeAllListeners('meeting-artifacts-updated'),
+  askQuickLook: (data) => ipcRenderer.invoke('quicklook-ask', data),
   log: (level, ...args) => ipcRenderer.send('log-from-renderer', level, ...args),
 });

@@ -1,8 +1,9 @@
+import { useEffect, useRef } from 'react';
 import { BookOpen } from 'lucide-react';
 
 /* ─── Types ─── */
 export interface JargonItem {
-  id: number;
+  id: string;
   term: string;
   explanation: string;
 }
@@ -13,6 +14,16 @@ interface JargonExplainerProps {
 
 /* ─── Component ─── */
 export default function JargonExplainer({ items }: JargonExplainerProps) {
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (items.length === 0 || !listRef.current) return;
+    listRef.current.scrollTo({
+      top: 0,
+      behavior: 'smooth',
+    });
+  }, [items]);
+
   return (
     <div className="bento-panel bento-jargon">
       <div className="bento-panel-header">
@@ -20,7 +31,7 @@ export default function JargonExplainer({ items }: JargonExplainerProps) {
         <span>Jargon / Explanations</span>
       </div>
 
-      <div className="bento-jargon-list">
+      <div ref={listRef} className="bento-jargon-list">
         {items.length === 0 ? (
           <p className="bento-empty-hint">
             Technical terms and jargon will be explained here in real time.

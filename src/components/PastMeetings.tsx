@@ -1,57 +1,23 @@
-import { useState, useEffect } from 'react';
-import { FolderOpen, Calendar, Clock, Search, ExternalLink } from 'lucide-react';
-
-interface Meeting {
-  id: number;
-  title: string;
-  date: string;
-  video_file_path: string;
-}
+import { useEffect, useState } from 'react';
+import { Calendar, Clock, ExternalLink, FolderOpen, Search } from 'lucide-react';
+import type { MeetingRecord } from '../types/meeting';
 
 export default function PastMeetings() {
-  const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [meetings, setMeetings] = useState<MeetingRecord[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    loadMeetings();
+    void loadMeetings(setMeetings, setLoading);
   }, []);
 
-  const loadMeetings = async () => {
-    if (!window.electronAPI) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const data = await window.electronAPI.getMeetings();
-      setMeetings(data);
-    } catch (err) {
-      console.error('Error loading meetings:', err);
-    }
-    setLoading(false);
-  };
-
-  const filteredMeetings = meetings.filter((m) =>
-    m.title.toLowerCase().includes(search.toLowerCase())
+  const filteredMeetings = meetings.filter((meeting) =>
+    meeting.title.toLowerCase().includes(search.toLowerCase()),
   );
 
-  const formatDate = (dateStr: string) => {
-    const d = new Date(dateStr);
-    return d.toLocaleDateString('en-US', {
-      year: 'numeric', month: 'short', day: 'numeric',
-    });
-  };
-
-  const formatTime = (dateStr: string) => {
-    const d = new Date(dateStr);
-    return d.toLocaleTimeString('en-US', {
-      hour: '2-digit', minute: '2-digit',
-    });
-  };
-
-  const handleOpenInExplorer = (filePath: string) => {
-    if (window.electronAPI) {
-      window.electronAPI.openInExplorer(filePath);
+  const handleOpenInExplorer = (filePath: string | null) => {
+    if (filePath && window.electronAPI) {
+      void window.electronAPI.openInExplorer(filePath);
     }
   };
 
@@ -69,7 +35,7 @@ export default function PastMeetings() {
           placeholder="Search meetings..."
           className="search-input"
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(event) => setSearch(event.target.value)}
         />
       </div>
 
@@ -93,21 +59,21 @@ export default function PastMeetings() {
         </div>
       ) : (
         <div className="meetings-list">
-          {filteredMeetings.map((m) => (
+          {filteredMeetings.map((meeting) => (
             <div
-              key={m.id}
+              key={meeting.id}
               className="meeting-card"
-              onClick={() => handleOpenInExplorer(m.video_file_path)}
+              onClick={() => handleOpenInExplorer(meeting.video_file_path)}
               title="Click to open in Explorer"
             >
               <div className="meeting-card-info">
-                <h4 className="meeting-card-title">{m.title}</h4>
+                <h4 className="meeting-card-title">{meeting.title}</h4>
                 <div className="meeting-card-meta">
                   <span className="meeting-card-meta-item">
-                    <Calendar size={13} /> {formatDate(m.date)}
+                    <Calendar size={13} /> {formatDate(meeting.date)}
                   </span>
                   <span className="meeting-card-meta-item">
-                    <Clock size={13} /> {formatTime(m.date)}
+                    <Clock size={13} /> {formatTime(meeting.date)}
                   </span>
                 </div>
               </div>
@@ -120,4 +86,40 @@ export default function PastMeetings() {
       )}
     </div>
   );
+}
+
+async function loadMeetings(
+  setMeetings: (value: MeetingRecord[]) => void,
+  setLoading: (value: boolean) => void,
+) {
+  if (!window.electronAPI) {
+    setLoading(false);
+    return;
+  }
+
+  try {
+    const data = await window.electronAPI.getMeetings();
+    setMeetings(data);
+  } catch (error) {
+    console.error('Error loading meetings:', error);
+  } finally {
+    setLoading(false);
+  }
+}
+
+function formatDate(dateStr: string) {
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+  });
+}
+
+function formatTime(dateStr: string) {
+  const date = new Date(dateStr);
+  return date.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }

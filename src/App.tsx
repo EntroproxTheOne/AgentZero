@@ -1,12 +1,13 @@
-import { useState, useRef } from 'react';
-import { Settings, History, LayoutDashboard, Square } from 'lucide-react';
-import TitleBar from './components/TitleBar';
+import { useRef, useState } from 'react';
+import { History, LayoutDashboard, Settings, Square } from 'lucide-react';
+import BentoGrid from './components/BentoGrid';
+import LoginPage from './components/LoginPage';
 import MeetingRecorder from './components/MeetingRecorder';
 import PastMeetings from './components/PastMeetings';
-import SettingsPage from './components/SettingsPage';
-import LoginPage from './components/LoginPage';
-import BentoGrid from './components/BentoGrid';
 import PostMeetingDashboard from './components/PostMeetingDashboard';
+import SettingsPage from './components/SettingsPage';
+import TitleBar from './components/TitleBar';
+import type { CurrentMeetingInfo } from './types/meeting';
 
 type Tab = 'dashboard' | 'past-meetings' | 'settings';
 
@@ -20,10 +21,10 @@ interface UserData {
 function App() {
   const [user, setUser] = useState<UserData | null>(null);
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
-  const [recordingStream, setRecordingStream] = useState<MediaStream | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [showPostMeeting, setShowPostMeeting] = useState(false);
-  const [meetingTitle, setMeetingTitle] = useState('');
+  const [currentMeeting, setCurrentMeeting] = useState<CurrentMeetingInfo | null>(null);
+  const [lastMeeting, setLastMeeting] = useState<CurrentMeetingInfo | null>(null);
   const stopFnRef = useRef<(() => Promise<void>) | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
 
@@ -33,35 +34,32 @@ function App() {
     { id: 'settings', label: 'Settings', icon: <Settings size={18} /> },
   ];
 
-  const handleLogin = (userData: UserData) => {
-    setUser(userData);
-  };
-
-  const handleLogout = () => {
-    setUser(null);
-  };
-  const handleRecordingStarted = (stream: MediaStream, stopFn: () => Promise<void>, title: string) => {
-    setRecordingStream(stream);
+  const handleRecordingStarted = (
+    _stream: MediaStream,
+    stopFn: () => Promise<void>,
+    _title: string,
+    meetingInfo: CurrentMeetingInfo,
+  ) => {
+    setCurrentMeeting(meetingInfo);
     setIsRecording(true);
     setShowPostMeeting(false);
-    setMeetingTitle(title);
     stopFnRef.current = stopFn;
-    recordingStartTimeRef.current = Date.now();
+    recordingStartTimeRef.current = meetingInfo.startTime;
   };
 
-  const handleRecordingStopped = () => {
-    setRecordingStream(null);
+  const handleRecordingStopped = (meetingInfo: CurrentMeetingInfo) => {
     setIsRecording(false);
+    setCurrentMeeting(null);
+    setLastMeeting(meetingInfo);
     setShowPostMeeting(true);
     stopFnRef.current = null;
   };
 
   const handleStopClick = async () => {
-    // 1-second guard to prevent accidental immediate stops from bubbling/fast re-renders
     if (Date.now() - recordingStartTimeRef.current < 1000) {
-      console.log('[App] Stop click ignored (too soon after start)');
       return;
     }
+
     if (stopFnRef.current) {
       await stopFnRef.current();
     }
@@ -69,20 +67,20 @@ function App() {
 
   const handleNewMeeting = () => {
     setShowPostMeeting(false);
+    setLastMeeting(null);
   };
 
   if (!user) {
     return (
       <div className="app-root">
         <TitleBar />
-        <LoginPage onLogin={handleLogin} />
+        <LoginPage onLogin={setUser} />
       </div>
     );
   }
 
-  /* ─── Dashboard Content ─── */
   const renderDashboard = () => {
-    if (isRecording) {
+    if (isRecording && currentMeeting) {
       return (
         <>
           <header className="page-header page-header-row">
@@ -91,7 +89,7 @@ function App() {
               <h3 className="page-title">Live Meeting</h3>
             </div>
             <button
-              onClick={handleStopClick}
+              onClick={() => void handleStopClick()}
               className="recorder-btn recorder-btn-stop recorder-btn-compact"
             >
               <Square size={16} />
@@ -99,17 +97,20 @@ function App() {
             </button>
           </header>
           <BentoGrid
-            stream={recordingStream}
+            key={currentMeeting.meetingId}
+            meetingId={currentMeeting.meetingId}
             listenerName={user.listener_name || user.username}
           />
         </>
       );
     }
 
-    if (showPostMeeting) {
+    if (showPostMeeting && lastMeeting) {
       return (
         <PostMeetingDashboard
-          meetingTitle={meetingTitle}
+          key={lastMeeting.dbId}
+          meetingTitle={lastMeeting.title}
+          meetingDbId={lastMeeting.dbId}
           onNewMeeting={handleNewMeeting}
         />
       );
@@ -159,15 +160,33 @@ function App() {
           </nav>
 
           <div className="sidebar-footer">
-            <button className="sidebar-logout" onClick={handleLogout}>Sign out</button>
+            <button className="sidebar-logout" onClick={() => setUser(null)}>Sign out</button>
             <div className="sidebar-version">v0.1.0</div>
           </div>
         </div>
 
         <main className="main-content">
-          {activeTab === 'dashboard' && renderDashboard()}
-          {activeTab === 'past-meetings' && <PastMeetings />}
-          {activeTab === 'settings' && <SettingsPage user={user} />}
+          <section
+            className="tab-panel"
+            style={{ display: activeTab === 'dashboard' ? 'flex' : 'none' }}
+            aria-hidden={activeTab !== 'dashboard'}
+          >
+            {renderDashboard()}
+          </section>
+          <section
+            className="tab-panel"
+            style={{ display: activeTab === 'past-meetings' ? 'flex' : 'none' }}
+            aria-hidden={activeTab !== 'past-meetings'}
+          >
+            <PastMeetings />
+          </section>
+          <section
+            className="tab-panel"
+            style={{ display: activeTab === 'settings' ? 'flex' : 'none' }}
+            aria-hidden={activeTab !== 'settings'}
+          >
+            <SettingsPage user={user} />
+          </section>
         </main>
       </div>
     </div>

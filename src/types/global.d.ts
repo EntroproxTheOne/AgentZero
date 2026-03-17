@@ -1,44 +1,52 @@
+import type {
+  CurrentMeetingInfo,
+  ExportMeetingResponse,
+  MeetingArtifactsResponse,
+  MeetingRecord,
+  QuickLookHistoryItem,
+  QuickLookResponse,
+  TranscriptEntry,
+} from './meeting';
+
 export {};
+
+interface DesktopSource {
+  id: string;
+  name: string;
+  thumbnail: string;
+}
 
 declare global {
   interface Window {
     electronAPI: {
-      // ── Recording ───────────────────────────────────────────────────────────
-      getDesktopSources: () => Promise<any[]>;
-      saveChunk: (data: { meetingId: number; buffer: number[] }) => Promise<string>;
+      getDesktopSources: () => Promise<DesktopSource[]>;
+      sendVideoChunk: (meetingId: number, buffer: ArrayBuffer) => void;
+      flushMeetingWrites: (data: { meetingId: number }) => Promise<void>;
       detectMeetingApps: () => Promise<string[]>;
-      startMeeting: (data: { title: string }) => Promise<{ meetingId: number; dbId: number; tempPath: string; meetingFolder: string; nameBase: string }>;
-      stopMeeting: (data: { meetingId: number; dbId: number; startTime: number; title: string, finalName?: string, meetingFolder?: string }) => Promise<{ finalPath: string; finalName: string; nameBase: string; meetingFolder: string }>;
-      getMeetings: () => Promise<any[]>;
+      startMeeting: (data: { title: string }) => Promise<CurrentMeetingInfo & { meetingFolder: string; nameBase: string }>;
+      stopMeeting: (data: { meetingId: number; dbId: number; startTime: number; title: string }) => Promise<CurrentMeetingInfo | null>;
+      getMeetings: () => Promise<MeetingRecord[]>;
+      getMeetingArtifacts: (data: { dbId: number }) => Promise<MeetingArtifactsResponse | null>;
+      exportMeetingMom: (data: { dbId: number; format: 'pdf' | 'markdown' }) => Promise<ExportMeetingResponse>;
       openInExplorer: (filePath: string) => Promise<void>;
-      // ── Auth ────────────────────────────────────────────────────────────────
       register: (data: { username: string; email: string; password: string }) => Promise<{ success: boolean; userId?: number; error?: string }>;
       login: (data: { email: string; password: string }) => Promise<{ success: boolean; user?: { id: number; username: string; email: string; listener_name: string }; error?: string }>;
       resetPassword: (data: { email: string; newPassword: string }) => Promise<{ success: boolean; error?: string }>;
       updateListenerName: (data: { userId: number; listenerName: string }) => Promise<{ success: boolean }>;
-      // ── Window ──────────────────────────────────────────────────────────────
       windowMinimize: () => void;
       windowMaximize: () => void;
       windowClose: () => void;
-      // ── Transcription ───────────────────────────────────────────────────────
       startTranscription: (data: { meetingId: number }) => Promise<void>;
-      stopTranscription: (data: { meetingId: number; dbId: number; finalName?: string, meetingFolder?: string }) => Promise<void>;
-      /** Zero-copy: ArrayBuffer is transferred to main process */
+      stopTranscription: (data: { meetingId: number; dbId: number }) => Promise<{ transcriptPath: string | null }>;
       sendAudioChunk: (meetingId: number, buffer: ArrayBuffer) => void;
       onTranscriptEntry: (callback: (entry: TranscriptEntry) => void) => void;
       offTranscriptEntry: () => void;
-      log: (level: 'info' | 'warn' | 'error', ...args: any[]) => void;
+      onLiveInsights: (callback: (payload: { meetingId: number; payload: import('./meeting').LiveInsightsPayload }) => void) => void;
+      offLiveInsights: () => void;
+      onMeetingArtifactsUpdated: (callback: (payload: { meetingId: number; payload: import('./meeting').MeetingArtifacts | null }) => void) => void;
+      offMeetingArtifactsUpdated: () => void;
+      askQuickLook: (data: { meetingId: number; question: string; history: QuickLookHistoryItem[] }) => Promise<QuickLookResponse>;
+      log: (level: 'info' | 'warn' | 'error', ...args: unknown[]) => void;
     };
-  }
-
-  interface TranscriptEntry {
-    /** 'you' = user mic (channel 0), 'meeting' = meeting audio (channel 1) */
-    source: 'you' | 'meeting';
-    /** Deepgram diarization speaker ID (only on meeting channel) */
-    speakerId: number | null;
-    transcript: string;
-    timestamp: string;
-    isFinal: boolean;
-    interim: boolean;
   }
 }

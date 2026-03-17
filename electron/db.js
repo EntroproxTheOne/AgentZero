@@ -14,9 +14,12 @@ export function initDB() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
       date TEXT NOT NULL,
+      start_time_ms INTEGER,
+      end_time_ms INTEGER,
       video_file_path TEXT,
       audio_file_path TEXT,
-      transcript_path TEXT
+      transcript_path TEXT,
+      artifacts_path TEXT
     );
 
     CREATE TABLE IF NOT EXISTS Transcripts (
@@ -42,9 +45,24 @@ export function initDB() {
   // Simple migration: ensure transcript_path exists for existing DBs
   const columns = db.prepare("PRAGMA table_info(Meetings)").all();
   const hasTranscriptPath = columns.some(col => col.name === 'transcript_path');
+  const hasArtifactsPath = columns.some(col => col.name === 'artifacts_path');
+  const hasStartTimeMs = columns.some(col => col.name === 'start_time_ms');
+  const hasEndTimeMs = columns.some(col => col.name === 'end_time_ms');
   if (!hasTranscriptPath) {
     db.prepare("ALTER TABLE Meetings ADD COLUMN transcript_path TEXT").run();
     console.log('[DB] Added transcript_path column to Meetings table');
+  }
+  if (!hasArtifactsPath) {
+    db.prepare("ALTER TABLE Meetings ADD COLUMN artifacts_path TEXT").run();
+    console.log('[DB] Added artifacts_path column to Meetings table');
+  }
+  if (!hasStartTimeMs) {
+    db.prepare("ALTER TABLE Meetings ADD COLUMN start_time_ms INTEGER").run();
+    console.log('[DB] Added start_time_ms column to Meetings table');
+  }
+  if (!hasEndTimeMs) {
+    db.prepare("ALTER TABLE Meetings ADD COLUMN end_time_ms INTEGER").run();
+    console.log('[DB] Added end_time_ms column to Meetings table');
   }
   
   console.log('Database initialized at', dbPath);

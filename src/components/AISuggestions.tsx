@@ -2,7 +2,7 @@ import { Sparkles } from 'lucide-react';
 
 /* ─── Types ─── */
 export interface SuggestionItem {
-  id: number;
+  id: string;
   text: string;
   type: 'action' | 'insight' | 'followup';
 }

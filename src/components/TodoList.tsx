@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { ListChecks, Plus } from 'lucide-react';
 
-/* ─── Types ─── */
 export interface TodoItem {
   id: number;
   text: string;
@@ -12,11 +11,21 @@ interface TodoListProps {
   items: TodoItem[];
   onToggle: (id: number) => void;
   onAdd: (text: string) => void;
+  recommendedText?: string | null;
 }
 
-/* ─── Component ─── */
-export default function TodoList({ items, onToggle, onAdd }: TodoListProps) {
+export default function TodoList({
+  items,
+  onToggle,
+  onAdd,
+  recommendedText = null,
+}: TodoListProps) {
   const [input, setInput] = useState('');
+  const normalizedTodoTexts = new Set(items.map((item) => item.text.trim().toLowerCase()));
+  const showRecommended = Boolean(
+    recommendedText
+    && !normalizedTodoTexts.has(recommendedText.trim().toLowerCase()),
+  );
 
   const handleAdd = () => {
     const trimmed = input.trim();
@@ -30,10 +39,25 @@ export default function TodoList({ items, onToggle, onAdd }: TodoListProps) {
       <div className="bento-panel-header">
         <ListChecks size={16} />
         <span>To-Dos</span>
-        <span className="bento-badge">{items.filter((t) => !t.done).length}</span>
+        <span className="bento-badge">{items.filter((item) => !item.done).length}</span>
       </div>
 
       <div className="bento-todo-list">
+        {showRecommended && (
+          <div className="todo-recommendation-inline">
+            <span className="todo-recommendation-label">Suggested</span>
+            <button
+              type="button"
+              className="todo-recommendation"
+              onClick={() => onAdd(recommendedText!.trim())}
+              title={recommendedText ?? ''}
+            >
+              <span className="todo-recommendation-text">{recommendedText}</span>
+              <span className="todo-recommendation-plus">+</span>
+            </button>
+          </div>
+        )}
+
         {items.map((item) => (
           <label key={item.id} className={`todo-item ${item.done ? 'todo-done' : ''}`}>
             <input
@@ -50,10 +74,14 @@ export default function TodoList({ items, onToggle, onAdd }: TodoListProps) {
       <div className="bento-todo-input">
         <input
           type="text"
-          placeholder="Add a to-do…"
+          placeholder="Add a to-do..."
           value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              handleAdd();
+            }
+          }}
           className="todo-field"
         />
         <button className="todo-add-btn" onClick={handleAdd} disabled={!input.trim()}>

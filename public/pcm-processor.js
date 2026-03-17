@@ -1,68 +1,63 @@
-/**
- * pcm-processor.js — AudioWorklet processor for dual-channel PCM capture.
- *
- * Accepts two audio inputs:
- *   input[0] = user microphone  (channel 0 in the Deepgram stream)
- *   input[1] = meeting audio    (channel 1 in the Deepgram stream)
- *
- * Accumulates ~250ms of audio at 16 kHz (4000 samples per channel),
- * then interleaves them into a single Int16Array and transfers the
- * ArrayBuffer zero-copy to the renderer via the MessagePort.
- *
- * Interleaved layout: [mic0, mtg0, mic1, mtg1, ... micN, mtgN]
- * This matches linear16 2-channel interleaved PCM expected by Deepgram.
- */
-
-const BATCH_SAMPLES = 4000; // ~250 ms at 16 kHz
+const BATCH_SAMPLES = 4000;
 
 class PCMProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this._micAccum  = new Float32Array(BATCH_SAMPLES);
-    this._mtgAccum  = new Float32Array(BATCH_SAMPLES);
-    this._count     = 0;
+    this.micAccum = new Float32Array(BATCH_SAMPLES);
+    this.meetingAccum = new Float32Array(BATCH_SAMPLES);
+    this.sampleCount = 0;
+
+    this.port.onmessage = (event) => {
+      if (event.data?.type === 'flush') {
+        if (this.sampleCount > 0) {
+          this.flush();
+        }
+        this.port.postMessage({ type: 'flush-complete' });
+      }
+    };
   }
 
   process(inputs) {
-    // inputs[0] = mic node, inputs[1] = meeting node
     const micFrame = inputs[0]?.[0];
-    const mtgFrame = inputs[1]?.[0];
+    const meetingFrame = inputs[1]?.[0];
 
-    if (!micFrame && !mtgFrame) return true;
+    if (!micFrame && !meetingFrame) {
+      return true;
+    }
 
-    const len = micFrame ? micFrame.length : (mtgFrame ? mtgFrame.length : 128);
+    const frameLength = micFrame ? micFrame.length : (meetingFrame ? meetingFrame.length : 128);
 
-    for (let i = 0; i < len; i++) {
-      if (this._count >= BATCH_SAMPLES) {
-        // Flush: interleave and transfer
-        this._flush();
+    for (let index = 0; index < frameLength; index += 1) {
+      if (this.sampleCount >= BATCH_SAMPLES) {
+        this.flush();
       }
-      this._micAccum[this._count] = micFrame ? micFrame[i] : 0;
-      this._mtgAccum[this._count] = mtgFrame ? mtgFrame[i] : 0;
-      this._count++;
+
+      this.micAccum[this.sampleCount] = micFrame ? micFrame[index] : 0;
+      this.meetingAccum[this.sampleCount] = meetingFrame ? meetingFrame[index] : 0;
+      this.sampleCount += 1;
     }
 
-    return true; // keep processor alive
+    return true;
   }
 
-  _flush() {
-    const n = this._count;
-    const interleaved = new Int16Array(n * 2);
-    for (let i = 0; i < n; i++) {
-      interleaved[i * 2]     = this._toInt16(this._micAccum[i]);
-      interleaved[i * 2 + 1] = this._toInt16(this._mtgAccum[i]);
+  flush() {
+    const interleaved = new Int16Array(this.sampleCount * 2);
+
+    for (let index = 0; index < this.sampleCount; index += 1) {
+      interleaved[index * 2] = this.toInt16(this.micAccum[index]);
+      interleaved[index * 2 + 1] = this.toInt16(this.meetingAccum[index]);
     }
-    const ab = interleaved.buffer;
-    this.port.postMessage(ab, [ab]); // zero-copy transfer
 
-    // Reset accumulators
-    this._micAccum = new Float32Array(BATCH_SAMPLES);
-    this._mtgAccum = new Float32Array(BATCH_SAMPLES);
-    this._count    = 0;
+    const buffer = interleaved.buffer;
+    this.port.postMessage({ type: 'audio-chunk', buffer }, [buffer]);
+
+    this.micAccum = new Float32Array(BATCH_SAMPLES);
+    this.meetingAccum = new Float32Array(BATCH_SAMPLES);
+    this.sampleCount = 0;
   }
 
-  _toInt16(f) {
-    const clamped = Math.max(-1, Math.min(1, f));
+  toInt16(value) {
+    const clamped = Math.max(-1, Math.min(1, value));
     return clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff;
   }
 }
