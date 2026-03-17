@@ -15,7 +15,8 @@ export function initDB() {
       title TEXT NOT NULL,
       date TEXT NOT NULL,
       video_file_path TEXT,
-      audio_file_path TEXT
+      audio_file_path TEXT,
+      transcript_path TEXT
     );
 
     CREATE TABLE IF NOT EXISTS Transcripts (
@@ -37,6 +38,14 @@ export function initDB() {
       created_at TEXT NOT NULL
     );
   `);
+
+  // Simple migration: ensure transcript_path exists for existing DBs
+  const columns = db.prepare("PRAGMA table_info(Meetings)").all();
+  const hasTranscriptPath = columns.some(col => col.name === 'transcript_path');
+  if (!hasTranscriptPath) {
+    db.prepare("ALTER TABLE Meetings ADD COLUMN transcript_path TEXT").run();
+    console.log('[DB] Added transcript_path column to Meetings table');
+  }
   
   console.log('Database initialized at', dbPath);
 }

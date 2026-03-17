@@ -140,6 +140,16 @@ export async function startTranscription(meetingId, mainWindow) {
   connection.on('open', () => {
     console.log(`[Transcriber] Deepgram connection open for meeting ${meetingId}`);
     
+    // Flush any chunks queued before connection was open
+    const session = sessions.get(meetingId);
+    if (session && session.chunkQueue.length > 0) {
+      console.log(`[Transcriber] Flushing ${session.chunkQueue.length} queued chunks...`);
+      while (session.chunkQueue.length > 0) {
+        const chunk = session.chunkQueue.shift();
+        connection.sendMedia(chunk);
+      }
+    }
+    
     // Start keep-alive interval
     if (keepAlive) clearInterval(keepAlive);
     keepAlive = setInterval(() => {
@@ -169,7 +179,8 @@ export async function startTranscription(meetingId, mainWindow) {
     entries, 
     mainWindow, 
     keepAlive,
-    firstChunkReceived: false 
+    firstChunkReceived: false,
+    chunkQueue: [] 
   });
 }
 
@@ -191,8 +202,19 @@ export function sendChunk(meetingId, buffer) {
   }
 
   try {
-    // SDK v5: use sendMedia instead of direct websocket send
-    session.connection.sendMedia(Buffer.from(buffer));
+    // SDK v5: handle connection not ready yet (e.g. initial handshake)
+    if (session.connection.readyState === 1) { // OPEN
+      // Flush queue if any (should already be handled by 'open' event, but defensive)
+      while (session.chunkQueue.length > 0) {
+        session.connection.sendMedia(session.chunkQueue.shift());
+      }
+      session.connection.sendMedia(Buffer.from(buffer));
+    } else {
+      // Buffer the chunk briefly while connecting
+      if (session.chunkQueue.length < 50) { // Safety cap (~5-10s of audio)
+        session.chunkQueue.push(Buffer.from(buffer));
+      }
+    }
   } catch (err) {
     console.error('[Transcriber] Error sending chunk:', err);
   }
