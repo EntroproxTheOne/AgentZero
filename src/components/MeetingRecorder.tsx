@@ -26,6 +26,8 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
   const startTimeRef  = useRef<number>(0);
   const titleRef      = useRef<string>('');
   const isStoppingRef = useRef(false);
+  const meetingFolderRef = useRef<string>('');
+  const nameBaseRef      = useRef<string>('');
 
   // ── Live transcription pipeline (PCM via AudioWorklet) ──────────────────────
   const audioCtxRef     = useRef<AudioContext | null>(null);
@@ -74,6 +76,8 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
         const result = await window.electronAPI.startMeeting({ title: titleRef.current });
         meetingIdRef.current = result.meetingId;
         dbIdRef.current      = result.dbId;
+        meetingFolderRef.current = result.meetingFolder;
+        nameBaseRef.current      = result.nameBase;
       } else {
         meetingIdRef.current = Date.now();
       }
@@ -128,6 +132,7 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
             await window.electronAPI.saveChunk({
               meetingId: meetingIdRef.current,
               buffer: Array.from(new Uint8Array(buffer)),
+              // Pass the meetingFolder if needed by saveChunk (currently main.js infers it, but we could be explicit)
             });
           })();
           pendingSavesRef.current.push(saveTask);
@@ -261,24 +266,25 @@ export default function MeetingRecorder({ onRecordingStarted, onRecordingStopped
 
     if (window.electronAPI) {
       try {
-        // 1. Finalize video file first (ffmpeg remux → seekable webm)
-        // This gives us the final formatted filename: YYYY-MM-DD-HH-MM-SS-DURATION-TITLE.webm
-        const { finalName } = await window.electronAPI.stopMeeting({
+        // 1. Finalize video file first
+        const { nameBase, finalName: videoName, meetingFolder } = await window.electronAPI.stopMeeting({
           meetingId: meetingIdRef.current,
           dbId: dbIdRef.current,
           startTime: startTimeRef.current,
           title: titleRef.current,
+          meetingFolder: meetingFolderRef.current,
         });
-        console.log('Recording saved:', finalName);
+        console.log('Recording saved:', videoName);
 
-        // 2. Finalize transcript with the matching name (replacing .webm with .json)
-        const transcriptName = finalName.replace(/\.webm$/, '.json');
+        // 2. Finalize transcript using the matching folder/name base
+        const transcriptName = `${nameBase}.json`;
         await window.electronAPI.stopTranscription({
           meetingId: meetingIdRef.current,
           dbId: dbIdRef.current,
           finalName: transcriptName,
+          meetingFolder: meetingFolder,
         });
-        console.log('Transcript saved alongside video.');
+        console.log('Transcript saved:', transcriptName);
       } catch (err) {
         console.error('Error during recording finalization:', err);
       }

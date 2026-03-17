@@ -226,7 +226,7 @@ export function sendChunk(meetingId, buffer) {
  * @param {number} dbId
  * @param {string} [finalName]
  */
-export async function stopTranscription(meetingId, dbId, finalName) {
+export async function stopTranscription(meetingId, dbId, finalName, meetingFolder) {
   const session = sessions.get(meetingId);
   if (!session) return;
 
@@ -244,8 +244,11 @@ export async function stopTranscription(meetingId, dbId, finalName) {
   await new Promise((resolve) => setTimeout(resolve, 1500));
 
   if (entries.length > 0) {
-    const dir      = getRecordingsDir();
-    const filePath = path.join(dir, finalName || `transcript_${meetingId}.json`);
+    const fileName = finalName || `transcript_${meetingId}.json`;
+    const filePath = meetingFolder 
+      ? path.join(meetingFolder, fileName)
+      : path.join(getRecordingsDir(), fileName);
+      
     fs.writeFileSync(filePath, JSON.stringify(entries, null, 2), 'utf-8');
     console.log(`[Transcriber] Transcript saved: ${filePath}`);
 

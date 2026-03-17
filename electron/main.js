@@ -120,64 +120,67 @@ ipcMain.handle('get-desktop-sources', async () => {
   }));
 });
 
+// Active recording metadata: Map<meetingId, { tempPath, dbId, folder }>
+const activeMeetings = new Map();
+
 // ─── Streaming: append each chunk to the temp file on disk immediately ───
 ipcMain.handle('save-chunk', async (event, { meetingId, buffer }) => {
-  const dir = getRecordingsDir();
-  const tempPath = path.join(dir, `temp_meeting_${meetingId}.webm`);
-  fs.appendFileSync(tempPath, Buffer.from(buffer));
+  const meta = activeMeetings.get(meetingId);
+  if (meta) {
+    fs.appendFileSync(meta.tempPath, Buffer.from(buffer));
+  }
 
   // Trigger transcription asynchronously
   transcribeChunk(meetingId, buffer);
 
-  return tempPath;
+  return meta?.tempPath;
 });
 
 ipcMain.handle('start-meeting', async (event, { title }) => {
   const { getDB } = await import('./db.js');
   const db = getDB();
   const now = new Date();
+  const startTime = now.getTime();
+  const meetingId = startTime;
   const dateStr = now.toISOString();
-  const meetingId = Date.now();
 
-  const dir = getRecordingsDir();
-  const tempPath = path.join(dir, `temp_meeting_${meetingId}.webm`);
+  // Create meeting-specific folder
+  const nameBase = getFinalFileName(startTime, title);
+  const rootDir = getRecordingsDir();
+  const meetingFolder = path.join(rootDir, nameBase);
+  if (!fs.existsSync(meetingFolder)) fs.mkdirSync(meetingFolder, { recursive: true });
 
-  const stmt = db.prepare('INSERT INTO Meetings (title, date, video_file_path) VALUES (?, ?, ?)');
-  const info = stmt.run(title || 'Untitled Meeting', dateStr, tempPath);
+  const tempPath = path.join(meetingFolder, `temp_video.webm`);
+  
+  activeMeetings.set(meetingId, { tempPath, dbId: 0 /* updated below */, folder: meetingFolder });
 
-  return { meetingId, dbId: info.lastInsertRowid, tempPath };
+  const stmt = db.prepare('INSERT INTO Meetings (title, date, video_file_path, audio_file_path, transcript_path) VALUES (?, ?, ?, ?, ?)');
+  const info = stmt.run(title || 'Untitled Meeting', dateStr, tempPath, null, null);
+  
+  const dbId = info.lastInsertRowid;
+  activeMeetings.get(meetingId).dbId = dbId;
+
+  return { meetingId, dbId, tempPath, meetingFolder, nameBase };
 });
 
-// ─── Stop meeting: ffmpeg metadata fix, rename, cleanup ───
-ipcMain.handle('stop-meeting', async (event, { meetingId, dbId, startTime, title }) => {
+ipcMain.handle('stop-meeting', async (event, { meetingId, dbId, startTime, title, finalName, meetingFolder }) => {
   const { getDB } = await import('./db.js');
   const db = getDB();
-  const dir = getRecordingsDir();
-  const tempPath = path.join(dir, `temp_meeting_${meetingId}.webm`);
+  const tempPath = path.join(meetingFolder, `temp_video.webm`);
 
-  // Build final filename: YYYY-MM-DD-HH-MM-SS-DURATION-TITLE.webm
-  const start = new Date(startTime);
-  const durationMs = Date.now() - startTime;
-  const durationMins = Math.round(durationMs / 60000);
-  const durationStr = `${durationMins}min`;
+  // Build final name with updated duration
+  const nameBase = getFinalFileName(startTime, title);
+  const fileName = `${nameBase}.webm`;
+  const finalPath = path.join(meetingFolder, fileName);
 
-  const pad = (n) => String(n).padStart(2, '0');
-  const datePrefix = `${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}-${pad(start.getHours())}-${pad(start.getMinutes())}-${pad(start.getSeconds())}`;
-  const safeTitle = (title || 'Untitled').replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-');
-  const finalName = `${datePrefix}-${durationStr}-${safeTitle}.webm`;
-  const finalPath = path.join(dir, finalName);
-
-  // Use ffmpeg to remux the temp file — fixes duration metadata without transcoding
+  // Use ffmpeg to remux the temp file
   if (fs.existsSync(tempPath)) {
     try {
-      // Force OS to flush all buffered writes to disk before ffmpeg reads the file
       await fsyncFile(tempPath);
       await runFFmpegRemux(tempPath, finalPath);
-      // Delete the temp file after successful remux
       fs.unlinkSync(tempPath);
     } catch (err) {
-      console.error('FFmpeg remux failed, falling back to direct rename:', err);
-      // Fallback: just rename if ffmpeg is not available
+      console.error('FFmpeg remux failed:', err);
       fs.renameSync(tempPath, finalPath);
     }
   }
@@ -185,7 +188,10 @@ ipcMain.handle('stop-meeting', async (event, { meetingId, dbId, startTime, title
   // Update DB record
   db.prepare('UPDATE Meetings SET video_file_path = ? WHERE id = ?').run(finalPath, dbId);
 
-  return { finalPath, finalName };
+  // Cleanup session
+  activeMeetings.delete(meetingId);
+
+  return { finalPath, finalName: fileName, nameBase, meetingFolder };
 });
 
 ipcMain.handle('get-meetings', async () => {
@@ -217,11 +223,23 @@ ipcMain.on('log-from-renderer', (_event, level, ...args) => {
   console.log(`[Renderer-${level}]`, ...args);
 });
 
-ipcMain.handle('stop-transcription', async (_event, { meetingId, dbId, finalName }) => {
-  await stopTranscription(meetingId, dbId, finalName);
+ipcMain.handle('stop-transcription', async (_event, { meetingId, dbId, finalName, meetingFolder }) => {
+  await stopTranscription(meetingId, dbId, finalName, meetingFolder);
 });
 
 // ─── Helpers ───
+
+function getFinalFileName(startTime, title) {
+  const start = new Date(startTime);
+  const durationMs = Date.now() - startTime;
+  const durationMins = Math.round(durationMs / 60000);
+  const durationStr = `${durationMins}min`;
+
+  const pad = (n) => String(n).padStart(2, '0');
+  const datePrefix = `${start.getFullYear()}-${pad(start.getMonth()+1)}-${pad(start.getDate())}-${pad(start.getHours())}-${pad(start.getMinutes())}-${pad(start.getSeconds())}`;
+  const safeTitle = (title || 'Untitled').replace(/[^a-zA-Z0-9-_ ]/g, '').replace(/\s+/g, '-');
+  return `${datePrefix}-${durationStr}-${safeTitle}`;
+}
 
 function getRecordingsDir() {
   const documentsDir = app.getPath('documents');

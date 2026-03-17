@@ -7,8 +7,8 @@ declare global {
       getDesktopSources: () => Promise<any[]>;
       saveChunk: (data: { meetingId: number; buffer: number[] }) => Promise<string>;
       detectMeetingApps: () => Promise<string[]>;
-      startMeeting: (data: { title: string }) => Promise<{ meetingId: number; dbId: number; tempPath: string }>;
-      stopMeeting: (data: { meetingId: number; dbId: number; startTime: number; title: string }) => Promise<{ finalPath: string; finalName: string }>;
+      startMeeting: (data: { title: string }) => Promise<{ meetingId: number; dbId: number; tempPath: string; meetingFolder: string; nameBase: string }>;
+      stopMeeting: (data: { meetingId: number; dbId: number; startTime: number; title: string, finalName?: string, meetingFolder?: string }) => Promise<{ finalPath: string; finalName: string; nameBase: string; meetingFolder: string }>;
       getMeetings: () => Promise<any[]>;
       openInExplorer: (filePath: string) => Promise<void>;
       // ── Auth ────────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ declare global {
       windowClose: () => void;
       // ── Transcription ───────────────────────────────────────────────────────
       startTranscription: (data: { meetingId: number }) => Promise<void>;
-      stopTranscription: (data: { meetingId: number; dbId: number; finalName?: string }) => Promise<void>;
+      stopTranscription: (data: { meetingId: number; dbId: number; finalName?: string, meetingFolder?: string }) => Promise<void>;
       /** Zero-copy: ArrayBuffer is transferred to main process */
       sendAudioChunk: (meetingId: number, buffer: ArrayBuffer) => void;
       onTranscriptEntry: (callback: (entry: TranscriptEntry) => void) => void;
