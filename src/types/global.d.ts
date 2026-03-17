@@ -1,4 +1,5 @@
 import type {
+  AppSettings,
   CurrentMeetingInfo,
   ExportMeetingResponse,
   MeetingArtifactsResponse,
@@ -33,6 +34,8 @@ declare global {
       login: (data: { email: string; password: string }) => Promise<{ success: boolean; user?: { id: number; username: string; email: string; listener_name: string }; error?: string }>;
       resetPassword: (data: { email: string; newPassword: string }) => Promise<{ success: boolean; error?: string }>;
       updateListenerName: (data: { userId: number; listenerName: string }) => Promise<{ success: boolean }>;
+      getAppSettings: () => Promise<AppSettings>;
+      updateAppSettings: (data: { nativeIndiaMode: boolean }) => Promise<AppSettings>;
       windowMinimize: () => void;
       windowMaximize: () => void;
       windowClose: () => void;

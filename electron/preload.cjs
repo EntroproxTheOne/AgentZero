@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   login: (data) => ipcRenderer.invoke('auth-login', data),
   resetPassword: (data) => ipcRenderer.invoke('auth-reset-password', data),
   updateListenerName: (data) => ipcRenderer.invoke('update-listener-name', data),
+  getAppSettings: () => ipcRenderer.invoke('get-app-settings'),
+  updateAppSettings: (data) => ipcRenderer.invoke('update-app-settings', data),
   // Window
   windowMinimize: () => ipcRenderer.send('window-minimize'),
   windowMaximize: () => ipcRenderer.send('window-maximize'),

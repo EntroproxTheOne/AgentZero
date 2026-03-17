@@ -19,7 +19,9 @@ export const AI_CONFIG = {
     quickLook: 'gemini-2.5-flash',
     minutesOfMeeting: 'gemini-2.5-flash',
     live: 'openai/gpt-oss-120b',
+    liveGujarati: 'gemini-2.5-flash-lite',
   },
+  liveAnalysisGeminiLiteExcludedLanguages: ['en-IN', 'hi-IN'],
 };
 
 export function estimateTokenCount(text) {

@@ -5,6 +5,8 @@ export interface TranscriptEntry {
   timestamp: string;
   isFinal: boolean;
   interim: boolean;
+  languageCode?: string | null;
+  languageProbability?: number | null;
 }
 
 export interface SavedTranscriptEntry {
@@ -14,6 +16,25 @@ export interface SavedTranscriptEntry {
   speakerId: number | null;
   text: string;
   isFinal: true;
+  languageCode?: string | null;
+  languageProbability?: number | null;
+}
+
+export interface SupportedLanguage {
+  code: string;
+  label: string;
+}
+
+export interface AppSettings {
+  transcriptionProvider: 'deepgram' | 'sarvam';
+  nativeIndiaMode: boolean;
+  sarvam: {
+    isBeta: boolean;
+    model: string;
+    mode: 'transcribe' | 'translate' | 'verbatim' | 'translit' | 'codemix';
+    autoDetectLanguage: boolean;
+    supportedLanguages: SupportedLanguage[];
+  };
 }
 
 export interface JargonInsight {

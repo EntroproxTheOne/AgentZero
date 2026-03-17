@@ -6,7 +6,7 @@ import fsPromises from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { exec } from 'child_process';
 import ffmpegPath from 'ffmpeg-static';
-import { initDB, getDB } from './db.js';
+import { initDB, getAppSettings, getDB, updateAppSettings } from './db.js';
 import { startTranscription, sendChunk, stopTranscription } from './transcriber.js';
 import { detectMeetingApps } from './meetingApps.js';
 import { AsyncChunkWriter } from './chunkWriter.js';
@@ -119,6 +119,10 @@ ipcMain.handle('update-listener-name', async (_event, payload) => {
   const { updateListenerName } = await import('./db.js');
   return updateListenerName(payload.userId, payload.listenerName);
 });
+
+ipcMain.handle('get-app-settings', async () => getAppSettings());
+
+ipcMain.handle('update-app-settings', async (_event, payload) => updateAppSettings(payload));
 
 ipcMain.handle('open-in-explorer', async (_event, filePath) => {
   const { shell } = await import('electron');

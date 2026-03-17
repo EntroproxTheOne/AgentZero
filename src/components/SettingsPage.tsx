@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { User, Folder, Palette, Info, Save } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { User, Folder, Palette, Info, Save, Languages } from 'lucide-react';
+import type { AppSettings } from '../types/meeting';
 
 interface SettingsPageProps {
   user: {
@@ -13,6 +14,15 @@ interface SettingsPageProps {
 export default function SettingsPage({ user }: SettingsPageProps) {
   const [listenerName, setListenerName] = useState(user.listener_name || user.username);
   const [saved, setSaved] = useState(false);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    void window.electronAPI.getAppSettings().then(setSettings).catch((error) => {
+      console.error('Failed to load app settings:', error);
+    });
+  }, []);
 
   const handleSaveListener = async () => {
     if (window.electronAPI) {
@@ -20,6 +30,14 @@ export default function SettingsPage({ user }: SettingsPageProps) {
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     }
+  };
+
+  const handleIndiaModeToggle = async (enabled: boolean) => {
+    if (!window.electronAPI) return;
+    const updatedSettings = await window.electronAPI.updateAppSettings({ nativeIndiaMode: enabled });
+    setSettings(updatedSettings);
+    setSettingsSaved(true);
+    setTimeout(() => setSettingsSaved(false), 2000);
   };
 
   return (
@@ -95,6 +113,57 @@ export default function SettingsPage({ user }: SettingsPageProps) {
               <select className="setting-input">
                 <option>Light</option>
               </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <Languages size={18} className="settings-card-icon" />
+            <h4 className="settings-card-title">Native India Mode</h4>
+            <span className="settings-beta-badge">Beta</span>
+          </div>
+          <div className="settings-card-body">
+            <div className="setting-row">
+              <label className="setting-label">India-first speech provider</label>
+              <label className="settings-toggle-row">
+                <div>
+                  <div className="settings-toggle-title">
+                    Sarvam Saaras v3
+                    <span className="settings-provider-meta">Auto language detect</span>
+                  </div>
+                  <div className="settings-toggle-sub">
+                    When enabled, new meetings use Sarvam Saaras v3 for multilingual Indian-language transcription while keeping the rest of the workflow unchanged.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className={`settings-toggle ${settings?.nativeIndiaMode ? 'settings-toggle-on' : ''}`}
+                  onClick={() => void handleIndiaModeToggle(!settings?.nativeIndiaMode)}
+                  aria-pressed={settings?.nativeIndiaMode ?? false}
+                >
+                  <span className="settings-toggle-knob" />
+                </button>
+              </label>
+              <div className="settings-provider-status">
+                <span className="settings-provider-pill">
+                  Default mode: {settings?.transcriptionProvider === 'sarvam' ? 'Sarvam' : 'Deepgram'}
+                </span>
+                {settingsSaved && (
+                  <span className="settings-provider-saved">Saved</span>
+                )}
+              </div>
+            </div>
+
+            <div className="setting-row">
+              <label className="setting-label">Supported Languages</label>
+              <div className="settings-language-grid">
+                {(settings?.sarvam.supportedLanguages ?? []).map((language) => (
+                  <span key={language.code} className="settings-language-chip" title={language.code}>
+                    {language.label}
+                  </span>
+                ))}
+              </div>
             </div>
           </div>
         </div>

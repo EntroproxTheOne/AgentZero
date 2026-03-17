@@ -5,6 +5,32 @@ import crypto from 'crypto';
 
 let db;
 
+const SARVAM_SUPPORTED_LANGUAGES = [
+  { code: 'hi-IN', label: 'Hindi' },
+  { code: 'bn-IN', label: 'Bengali' },
+  { code: 'kn-IN', label: 'Kannada' },
+  { code: 'ml-IN', label: 'Malayalam' },
+  { code: 'mr-IN', label: 'Marathi' },
+  { code: 'od-IN', label: 'Odia' },
+  { code: 'pa-IN', label: 'Punjabi' },
+  { code: 'ta-IN', label: 'Tamil' },
+  { code: 'te-IN', label: 'Telugu' },
+  { code: 'en-IN', label: 'English (India)' },
+  { code: 'gu-IN', label: 'Gujarati' },
+  { code: 'as-IN', label: 'Assamese' },
+  { code: 'ur-IN', label: 'Urdu' },
+  { code: 'ne-IN', label: 'Nepali' },
+  { code: 'kok-IN', label: 'Konkani' },
+  { code: 'ks-IN', label: 'Kashmiri' },
+  { code: 'sd-IN', label: 'Sindhi' },
+  { code: 'sa-IN', label: 'Sanskrit' },
+  { code: 'sat-IN', label: 'Santali' },
+  { code: 'mni-IN', label: 'Manipuri' },
+  { code: 'brx-IN', label: 'Bodo' },
+  { code: 'mai-IN', label: 'Maithili' },
+  { code: 'doi-IN', label: 'Dogri' },
+];
+
 export function initDB() {
   const dbPath = path.join(app.getPath('userData'), 'agentzero.db');
   db = new Database(dbPath, { verbose: console.log });
@@ -40,6 +66,12 @@ export function initDB() {
       listener_name TEXT DEFAULT '',
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS AppSettings (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      transcription_provider TEXT NOT NULL DEFAULT 'deepgram',
+      india_mode_enabled INTEGER NOT NULL DEFAULT 0
+    );
   `);
 
   // Simple migration: ensure transcript_path exists for existing DBs
@@ -64,6 +96,24 @@ export function initDB() {
     db.prepare("ALTER TABLE Meetings ADD COLUMN end_time_ms INTEGER").run();
     console.log('[DB] Added end_time_ms column to Meetings table');
   }
+
+  const appSettingsColumns = db.prepare("PRAGMA table_info(AppSettings)").all();
+  const hasTranscriptionProvider = appSettingsColumns.some((col) => col.name === 'transcription_provider');
+  const hasIndiaModeEnabled = appSettingsColumns.some((col) => col.name === 'india_mode_enabled');
+  if (!hasTranscriptionProvider) {
+    db.prepare("ALTER TABLE AppSettings ADD COLUMN transcription_provider TEXT NOT NULL DEFAULT 'deepgram'").run();
+    console.log('[DB] Added transcription_provider column to AppSettings table');
+  }
+  if (!hasIndiaModeEnabled) {
+    db.prepare("ALTER TABLE AppSettings ADD COLUMN india_mode_enabled INTEGER NOT NULL DEFAULT 0").run();
+    console.log('[DB] Added india_mode_enabled column to AppSettings table');
+  }
+
+  db.prepare(`
+    INSERT INTO AppSettings (id, transcription_provider, india_mode_enabled)
+    VALUES (1, 'deepgram', 0)
+    ON CONFLICT(id) DO NOTHING
+  `).run();
   
   console.log('Database initialized at', dbPath);
 }
@@ -130,4 +180,38 @@ export function resetPassword(email, newPassword) {
 export function updateListenerName(userId, listenerName) {
   db.prepare('UPDATE Users SET listener_name = ? WHERE id = ?').run(listenerName, userId);
   return { success: true };
+}
+
+export function getAppSettings() {
+  const row = db.prepare(`
+    SELECT transcription_provider, india_mode_enabled
+    FROM AppSettings
+    WHERE id = 1
+  `).get();
+
+  const transcriptionProvider = row?.transcription_provider === 'sarvam' ? 'sarvam' : 'deepgram';
+  const nativeIndiaMode = Boolean(row?.india_mode_enabled);
+
+  return {
+    transcriptionProvider,
+    nativeIndiaMode,
+    sarvam: {
+      isBeta: true,
+      model: 'saaras:v3',
+      mode: 'transcribe',
+      autoDetectLanguage: true,
+      supportedLanguages: SARVAM_SUPPORTED_LANGUAGES,
+    },
+  };
+}
+
+export function updateAppSettings({ nativeIndiaMode }) {
+  const transcriptionProvider = nativeIndiaMode ? 'sarvam' : 'deepgram';
+  db.prepare(`
+    UPDATE AppSettings
+    SET transcription_provider = ?, india_mode_enabled = ?
+    WHERE id = 1
+  `).run(transcriptionProvider, nativeIndiaMode ? 1 : 0);
+
+  return getAppSettings();
 }

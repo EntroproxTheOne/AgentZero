@@ -2,6 +2,7 @@ import { AI_CONFIG, capTranscriptContext } from './config.js';
 import { buildLiveInsightsPrompt } from './prompts.js';
 import { parseJsonText, validateLiveInsights } from './schemas.js';
 import { generateGroqJson } from './providers/groq.js';
+import { generateGeminiJson } from './providers/gemini.js';
 import { updateArtifactsFile } from './artifactStore.js';
 
 export class LiveInsightsCoordinator {
@@ -16,6 +17,8 @@ export class LiveInsightsCoordinator {
       lastAnalyzedCount: 0,
       timer: null,
       inFlight: false,
+      lastProvider: null,
+      lastModel: null,
     });
   }
 
@@ -58,15 +61,26 @@ export class LiveInsightsCoordinator {
         contextMeta,
       });
 
-      const response = await generateGroqJson({
-        model: AI_CONFIG.models.live,
-        prompt,
-      });
+      const providerSelection = selectLiveInsightsProvider(session.transcriptEntries);
+      state.lastProvider = providerSelection.provider;
+      state.lastModel = providerSelection.model;
+      const response = providerSelection.provider === 'gemini'
+        ? await generateGeminiJson({
+          model: providerSelection.model,
+          prompt,
+          maxOutputTokens: AI_CONFIG.liveAnalysisMaxCompletionTokens,
+        })
+        : await generateGroqJson({
+          model: providerSelection.model,
+          prompt,
+          maxCompletionTokens: AI_CONFIG.liveAnalysisMaxCompletionTokens,
+        });
 
       const liveInsights = validateLiveInsights(parseJsonText(response.text));
       const updatedAt = new Date().toISOString();
       const debugEntry = {
-        model: AI_CONFIG.models.live,
+        provider: providerSelection.provider,
+        model: providerSelection.model,
         updatedAt,
         latencyMs: response.latencyMs,
         estimatedInputTokens: contextMeta.estimatedTokens,
@@ -77,11 +91,11 @@ export class LiveInsightsCoordinator {
       state.lastAnalyzedCount = session.transcriptEntries.length;
 
       const artifacts = await updateArtifactsFile(session.artifactsPath, (current) => ({
-        ...current,
-        liveInsights: {
-          status: 'ready',
-          updatedAt,
-          error: null,
+          ...current,
+          liveInsights: {
+            status: 'ready',
+            updatedAt,
+            error: null,
           jargon: buildJargonInsights(current.liveInsights?.jargon, liveInsights.jargon, updatedAt),
           liveQuestions: buildLiveQuestions(current.liveInsights?.liveQuestions, liveInsights.liveQuestions, updatedAt),
           suggestions: buildSuggestions(current.liveInsights?.suggestions, liveInsights.suggestions, updatedAt),
@@ -96,22 +110,23 @@ export class LiveInsightsCoordinator {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       await updateArtifactsFile(session.artifactsPath, (current) => ({
-        ...current,
-        liveInsights: {
-          ...current.liveInsights,
-          status: 'error',
-          error: errorMessage,
-          updatedAt: new Date().toISOString(),
-        },
-        debug: {
-          ...current.debug,
-          liveAnalysis: [...current.debug.liveAnalysis.slice(-19), {
-            model: AI_CONFIG.models.live,
-            updatedAt: new Date().toISOString(),
+          ...current,
+          liveInsights: {
+            ...current.liveInsights,
+            status: 'error',
             error: errorMessage,
-          }],
-        },
-      }));
+            updatedAt: new Date().toISOString(),
+          },
+          debug: {
+            ...current.debug,
+            liveAnalysis: [...current.debug.liveAnalysis.slice(-19), {
+              provider: state.lastProvider ?? 'groq',
+              model: state.lastModel ?? AI_CONFIG.models.live,
+              updatedAt: new Date().toISOString(),
+              error: errorMessage,
+            }],
+          },
+        }));
     } finally {
       state.inFlight = false;
       const nextSession = this.getSession(meetingId);
@@ -120,6 +135,45 @@ export class LiveInsightsCoordinator {
       }
     }
   }
+}
+
+function selectLiveInsightsProvider(entries = []) {
+  const languageCode = getDominantLanguageCode(entries);
+  if (
+    languageCode
+    && !AI_CONFIG.liveAnalysisGeminiLiteExcludedLanguages.includes(languageCode)
+  ) {
+    return {
+      provider: 'gemini',
+      model: AI_CONFIG.models.liveGujarati,
+    };
+  }
+
+  return {
+    provider: 'groq',
+    model: AI_CONFIG.models.live,
+  };
+}
+
+function getDominantLanguageCode(entries = []) {
+  const counts = new Map();
+
+  for (const entry of entries) {
+    const languageCode = entry.languageCode;
+    if (!languageCode) continue;
+    counts.set(languageCode, (counts.get(languageCode) ?? 0) + 1);
+  }
+
+  let topLanguage = null;
+  let topCount = 0;
+  for (const [languageCode, count] of counts.entries()) {
+    if (count > topCount) {
+      topLanguage = languageCode;
+      topCount = count;
+    }
+  }
+
+  return topLanguage;
 }
 
 function buildJargonInsights(previousItems = [], nextItems = [], updatedAt) {

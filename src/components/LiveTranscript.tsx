@@ -17,6 +17,16 @@ function TranscriptLine({ entry, interim = false }: { entry: TranscriptEntry; in
           {isYou ? <><Mic2 size={11} style={{ marginRight: 4 }} />{speakerLabel}</> : speakerLabel}
         </span>
         <span className="transcript-time">{entry.timestamp}</span>
+        {entry.languageCode && (
+          <span
+            className="transcript-language-tag"
+            title={entry.languageProbability != null
+              ? `${entry.languageCode} (${Math.round(entry.languageProbability * 100)}% confidence)`
+              : entry.languageCode}
+          >
+            {entry.languageCode}
+          </span>
+        )}
       </div>
       <p className="transcript-text">{entry.transcript}</p>
     </div>
