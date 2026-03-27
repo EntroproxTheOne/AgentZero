@@ -20,12 +20,14 @@ interface PostMeetingDashboardProps {
   meetingTitle: string;
   meetingDbId: number;
   onNewMeeting: () => void;
+  isReview?: boolean;
 }
 
 export default function PostMeetingDashboard({
   meetingTitle,
   meetingDbId,
   onNewMeeting,
+  isReview = false,
 }: PostMeetingDashboardProps) {
   const [meetingData, setMeetingData] = useState<MeetingArtifactsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,6 +35,22 @@ export default function PostMeetingDashboard({
   const [completedActionIds, setCompletedActionIds] = useState<number[]>([]);
   const [exportingFormat, setExportingFormat] = useState<'pdf' | 'markdown' | null>(null);
   const [exportStatus, setExportStatus] = useState('');
+  const [displayTitle, setDisplayTitle] = useState(meetingTitle);
+
+  // Listen for auto-generated title updates
+  useEffect(() => {
+    if (!window.electronAPI?.onMeetingTitleUpdated) return undefined;
+
+    window.electronAPI.onMeetingTitleUpdated((event) => {
+      if (event.dbId === meetingDbId) {
+        setDisplayTitle(event.title);
+      }
+    });
+
+    return () => {
+      window.electronAPI.offMeetingTitleUpdated?.();
+    };
+  }, [meetingDbId]);
 
   useEffect(() => {
     void loadMeetingArtifacts(meetingDbId, setMeetingData, setLoading, setError);
@@ -134,11 +152,11 @@ export default function PostMeetingDashboard({
     <div className="post-meeting">
       <div className="post-meeting-header">
         <div>
-          <h2 className="page-label">Meeting Ended</h2>
-          <h3 className="page-title">{meetingTitle || 'Meeting Summary'}</h3>
+          <h2 className="page-label">{isReview ? 'Past Meeting' : 'Meeting Ended'}</h2>
+          <h3 className="page-title">{displayTitle || 'Meeting Summary'}</h3>
         </div>
         <button className="pm-new-meeting-btn" onClick={onNewMeeting}>
-          Start New Meeting
+          {isReview ? 'Back to Meetings' : 'Start New Meeting'}
         </button>
       </div>
 

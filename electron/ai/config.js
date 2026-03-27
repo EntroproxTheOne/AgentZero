@@ -12,7 +12,7 @@ export const AI_CONFIG = {
   liveAnalysisMaxCompletionTokens: 1200,
   highlightsMaxCompletionTokens: 1800,
   quickLookMaxCompletionTokens: 1000,
-  minutesOfMeetingMaxCompletionTokens: 2400,
+  minutesOfMeetingMaxCompletionTokens: 8192,
   quickLookHistoryTurns: 6,
   models: {
     highlights: 'gemini-2.5-flash',

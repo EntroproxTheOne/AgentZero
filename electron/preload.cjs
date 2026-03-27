@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getMeetings: () => ipcRenderer.invoke('get-meetings'),
   getMeetingArtifacts: (data) => ipcRenderer.invoke('get-meeting-artifacts', data),
   exportMeetingMom: (data) => ipcRenderer.invoke('export-meeting-mom', data),
+  renameMeeting: (data) => ipcRenderer.invoke('rename-meeting', data),
+  deleteMeetings: (data) => ipcRenderer.invoke('delete-meetings', data),
+  autoTitleMeeting: (data) => ipcRenderer.invoke('auto-title-meeting', data),
   openInExplorer: (filePath) => ipcRenderer.invoke('open-in-explorer', filePath),
   // Auth
   register: (data) => ipcRenderer.invoke('auth-register', data),
@@ -42,6 +45,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('meeting-artifacts-updated', (_event, payload) => callback(payload)),
   offMeetingArtifactsUpdated: () =>
     ipcRenderer.removeAllListeners('meeting-artifacts-updated'),
+  onMeetingTitleUpdated: (callback) =>
+    ipcRenderer.on('meeting-title-updated', (_event, payload) => callback(payload)),
+  offMeetingTitleUpdated: () =>
+    ipcRenderer.removeAllListeners('meeting-title-updated'),
   askQuickLook: (data) => ipcRenderer.invoke('quicklook-ask', data),
   log: (level, ...args) => ipcRenderer.send('log-from-renderer', level, ...args),
 });

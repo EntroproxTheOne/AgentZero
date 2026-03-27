@@ -3,6 +3,7 @@ import { readArtifactsFile, updateArtifactsFile } from './artifactStore.js';
 import { generateGeminiJson } from './providers/gemini.js';
 import { buildMinutesOfMeetingPrompt } from './prompts.js';
 import { parseJsonText, validateMinutesOfMeeting } from './schemas.js';
+import { normalizeText, normalizeTranscriptEntries } from '../text/normalize.js';
 
 export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
   const currentArtifacts = await readArtifactsFile(session.artifactsPath);
@@ -25,7 +26,8 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
   }));
 
   try {
-    const transcriptLines = session.transcriptEntries.map((entry) => `${entry.speakerLabel}: ${entry.text}`);
+    const normalizedEntries = normalizeTranscriptEntries(session.transcriptEntries);
+    const transcriptLines = normalizedEntries.map((entry) => `${entry.speakerLabel}: ${entry.text}`);
     const contextMeta = capTranscriptContext(transcriptLines, {
       reservedTokens: 5000,
     });
@@ -46,7 +48,7 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
       maxOutputTokens: AI_CONFIG.minutesOfMeetingMaxCompletionTokens,
     });
 
-    const content = validateMinutesOfMeeting(parseJsonText(response.text));
+    const content = await parseMinutesOfMeetingContent(response.text);
     const updatedAt = new Date().toISOString();
 
     const updatedArtifacts = await updateArtifactsFile(session.artifactsPath, (current) => ({
@@ -74,6 +76,32 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     const updatedAt = new Date().toISOString();
+    const fallbackContent = buildFallbackMinutesOfMeeting({
+      session,
+      highlights: currentArtifacts?.highlights,
+    });
+
+    if (fallbackContent) {
+      const updatedArtifacts = await updateArtifactsFile(session.artifactsPath, (current) => ({
+        ...current,
+        minutesOfMeeting: {
+          status: 'ready',
+          updatedAt,
+          error: null,
+          content: fallbackContent,
+        },
+        debug: {
+          ...current.debug,
+          minutesOfMeeting: [...(current.debug?.minutesOfMeeting ?? []).slice(-9), {
+            model: 'fallback-from-highlights',
+            updatedAt,
+            error: errorMessage,
+          }],
+        },
+      }));
+
+      return updatedArtifacts.minutesOfMeeting;
+    }
 
     await updateArtifactsFile(session.artifactsPath, (current) => ({
       ...current,
@@ -95,6 +123,158 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
     }));
 
     throw error;
+  }
+}
+
+function buildFallbackMinutesOfMeeting({ session, highlights }) {
+  if (!highlights?.summary) {
+    return null;
+  }
+
+  return {
+    title: normalizeText(session.title) || 'Untitled Meeting',
+    overview: normalizeText(highlights.summary),
+    discussionPoints: Array.isArray(highlights.keyDiscussionPoints)
+      ? highlights.keyDiscussionPoints.map(normalizeText).filter(Boolean).slice(0, 6)
+      : [],
+    decisions: deriveDecisionsFromHighlights((highlights.keyDiscussionPoints ?? []).map(normalizeText)),
+    actionItems: (highlights.actionItems ?? []).filter(Boolean).slice(0, 8).map((task) => ({
+      task: normalizeText(task),
+      owner: 'Unassigned',
+      deadline: 'Not specified',
+      status: 'Open',
+      notes: '',
+    })),
+    risksAndBlockers: deriveRisksAndBlockers((highlights.keyDiscussionPoints ?? []).map(normalizeText)),
+    followUps: deriveFollowUps((highlights.actionItems ?? []).map(normalizeText)),
+  };
+}
+
+function deriveDecisionsFromHighlights(points) {
+  return points
+    .filter((point) => /\b(decided|decision|finalize|finalized|approved|proceed|selected)\b/i.test(point))
+    .slice(0, 6);
+}
+
+function deriveRisksAndBlockers(points) {
+  return points
+    .filter((point) => /\b(concern|risk|blocker|difficult|cost|issue|delay|complex)\b/i.test(point))
+    .slice(0, 4);
+}
+
+function deriveFollowUps(actionItems) {
+  return actionItems
+    .filter(Boolean)
+    .slice(0, 4)
+    .map((item) => `Follow up on: ${item.trim()}`);
+}
+
+async function parseMinutesOfMeetingContent(rawText) {
+  try {
+    return validateMinutesOfMeeting(parseJsonText(rawText));
+  } catch {
+    // Cap the broken JSON sent into repair prompts so the prompt itself doesn't blow context
+    const maxRepairSourceChars = 8000;
+    const truncatedRaw = typeof rawText === 'string' && rawText.length > maxRepairSourceChars
+      ? rawText.slice(0, maxRepairSourceChars) + '…[truncated]'
+      : rawText;
+
+    try {
+      const repairPrompt = `
+You are repairing malformed JSON for a Minutes of Meeting export.
+Return only valid, compact JSON. Keep every string value concise.
+
+Required shape:
+{
+  "title": string,
+  "overview": string,
+  "discussionPoints": string[],
+  "decisions": string[],
+  "actionItems": [
+    {
+      "task": string,
+      "owner": string,
+      "deadline": string,
+      "status": string,
+      "notes": string
+    }
+  ],
+  "risksAndBlockers": string[],
+  "followUps": string[]
+}
+
+Constraints:
+- overview: max 2 short paragraphs
+- discussionPoints: max 6
+- decisions: max 6
+- actionItems: max 8
+- risksAndBlockers: max 4
+- followUps: max 4
+- do not add markdown or code fences
+
+Repair this malformed JSON without inventing unrelated content:
+${truncatedRaw}
+`.trim();
+
+      const repairedResponse = await generateGeminiJson({
+        model: AI_CONFIG.models.minutesOfMeeting,
+        prompt: repairPrompt,
+        maxOutputTokens: 4096,
+      });
+
+      return validateMinutesOfMeeting(parseJsonText(repairedResponse.text));
+    } catch {
+      // Repair failed, try a full rebuild from the truncated source
+    }
+
+    try {
+      const rebuildPrompt = `
+You are rebuilding a Minutes of Meeting JSON object from a partial transcript excerpt.
+Return only valid, compact JSON that fits safely in one response.
+
+Required shape:
+{
+  "title": string,
+  "overview": string,
+  "discussionPoints": string[],
+  "decisions": string[],
+  "actionItems": [
+    {
+      "task": string,
+      "owner": string,
+      "deadline": string,
+      "status": string,
+      "notes": string
+    }
+  ],
+  "risksAndBlockers": string[],
+  "followUps": string[]
+}
+
+Constraints:
+- overview: max 2 short paragraphs
+- discussionPoints: max 6
+- decisions: max 6
+- actionItems: max 8
+- risksAndBlockers: max 4
+- followUps: max 4
+- do not add markdown or code fences
+
+Malformed source JSON to reconstruct from:
+${truncatedRaw}
+`.trim();
+
+      const rebuiltResponse = await generateGeminiJson({
+        model: AI_CONFIG.models.minutesOfMeeting,
+        prompt: rebuildPrompt,
+        maxOutputTokens: 4096,
+      });
+
+      return validateMinutesOfMeeting(parseJsonText(rebuiltResponse.text));
+    } catch {
+      // Rebuild also failed — let the outer catch in ensureMinutesOfMeeting handle fallback
+      throw new Error('All JSON repair attempts failed for Minutes of Meeting');
+    }
   }
 }
 

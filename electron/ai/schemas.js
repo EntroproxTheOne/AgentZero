@@ -31,10 +31,100 @@ export function parseJsonText(rawText) {
 
   try {
     return JSON.parse(text);
-  } catch (error) {
-    throw new Error(`Invalid JSON response: ${error.message}`);
+  } catch {
+    // Attempt programmatic salvage of truncated JSON before giving up
+    const salvaged = salvageTruncatedJson(text);
+    if (salvaged) {
+      try {
+        return JSON.parse(salvaged);
+      } catch {
+        // fall through
+      }
+    }
+    throw new Error(`Invalid JSON response even after salvage attempt`);
   }
 }
+
+/**
+ * Best-effort repair of truncated JSON (e.g. when Gemini stops mid-output).
+ * Tries closing unterminated strings and balancing brackets, then
+ * progressively trims trailing tokens until JSON.parse succeeds.
+ * Returns null if nothing works.
+ */
+export function salvageTruncatedJson(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+
+  let json = text.trim();
+
+  // Must start with { or [
+  if (json[0] !== '{' && json[0] !== '[') return null;
+
+  // Quick attempt: close strings + balance brackets
+  const quick = closeAndBalance(json);
+  try { JSON.parse(quick); return quick; } catch { /* continue */ }
+
+  // Progressive trimming: strip trailing tokens and retry
+  let candidate = json;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    // Remove last "token" — a quoted string, a word, a number, or a single char
+    candidate = candidate.replace(
+      /(?:"(?:[^"\\]|\\.)*"\s*|[a-zA-Z0-9_.]+\s*|.\s*)$/s,
+      '',
+    );
+    candidate = candidate.trim();
+    if (!candidate || candidate.length < 2) return null;
+
+    // Strip trailing commas, colons, incomplete key-value separators
+    candidate = candidate.replace(/[,:]\s*$/, '');
+
+    const attempt_json = closeAndBalance(candidate);
+    try { JSON.parse(attempt_json); return attempt_json; } catch { /* continue */ }
+  }
+
+  return null;
+}
+
+/** Close an unterminated string, strip trailing commas, and balance brackets/braces. */
+function closeAndBalance(json) {
+  let result = json;
+
+  // Close unterminated string
+  let inString = false;
+  let prevBackslash = false;
+  for (let i = 0; i < result.length; i++) {
+    const ch = result[i];
+    if (inString) {
+      if (ch === '"' && !prevBackslash) inString = false;
+      prevBackslash = ch === '\\' && !prevBackslash;
+    } else {
+      if (ch === '"') inString = true;
+      prevBackslash = false;
+    }
+  }
+  if (inString) result += '"';
+
+  // Strip trailing commas
+  result = result.replace(/,\s*$/, '');
+
+  // Balance brackets and braces
+  const stack = [];
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < result.length; i++) {
+    const ch = result[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\' && inStr) { esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{') stack.push('}');
+    else if (ch === '[') stack.push(']');
+    else if ((ch === '}' || ch === ']') && stack.length) stack.pop();
+  }
+  while (stack.length > 0) result += stack.pop();
+
+  return result;
+}
+
 
 export function validateLiveInsights(payload) {
   const jargon = Array.isArray(payload?.jargon) ? payload.jargon : [];

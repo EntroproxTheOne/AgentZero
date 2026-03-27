@@ -6,6 +6,7 @@ import {
   getTimestamp,
   wait,
 } from '../providerUtils.js';
+import { normalizeText } from '../../text/normalize.js';
 
 function downmixStereoToMono(buffer) {
   const sourceBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
@@ -168,7 +169,7 @@ export async function createSarvamSession(meetingId, { mainWindow, onFinalEntry 
 
     session.lastResultAt = Date.now();
 
-    const transcript = payload.data.transcript.trim();
+    const transcript = normalizeText(payload.data.transcript);
     if (transcript === session.lastCommittedTranscript) {
       return;
     }

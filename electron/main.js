@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { app, BrowserWindow, desktopCapturer, ipcMain, session } from 'electron';
+import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
@@ -13,6 +13,7 @@ import { AsyncChunkWriter } from './chunkWriter.js';
 import { MeetingAiService } from './ai/service.js';
 import { readArtifactsFile } from './ai/artifactStore.js';
 import { exportMeetingMom } from './exporters/momExport.js';
+import { AI_CONFIG } from './ai/config.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -294,6 +295,13 @@ ipcMain.handle('stop-transcription', async (_event, { meetingId, dbId }) => {
       }
     });
 
+  // Fire-and-forget: auto-generate title if still "Untitled Meeting"
+  if (sessionState.title === 'Untitled Meeting' && result.entries.length > 0) {
+    autoGenerateTitle(dbId, result.entries).catch((err) => {
+      console.error('[Main] Auto-title generation failed (non-critical):', err?.message || err);
+    });
+  }
+
   return {
     transcriptPath: sessionState.transcriptPath,
   };
@@ -411,6 +419,112 @@ ipcMain.handle('export-meeting-mom', async (_event, { dbId, format }) => {
   });
 });
 
+ipcMain.handle('rename-meeting', async (_event, { dbId, title }) => {
+  const db = getDB();
+  db.prepare('UPDATE Meetings SET title = ? WHERE id = ?').run(title, dbId);
+
+  // Also update the artifacts.json title if it exists
+  const meeting = db.prepare('SELECT artifacts_path FROM Meetings WHERE id = ?').get(dbId);
+  if (meeting?.artifacts_path && fs.existsSync(meeting.artifacts_path)) {
+    try {
+      const raw = await fsPromises.readFile(meeting.artifacts_path, 'utf8');
+      const artifacts = JSON.parse(raw);
+      artifacts.title = title;
+      await fsPromises.writeFile(meeting.artifacts_path, JSON.stringify(artifacts, null, 2), 'utf8');
+    } catch {
+      // Non-critical — DB is already updated
+    }
+  }
+
+  return { success: true };
+});
+
+ipcMain.handle('delete-meetings', async (_event, { dbIds }) => {
+  const db = getDB();
+  let deletedCount = 0;
+
+  for (const dbId of dbIds) {
+    const meeting = db.prepare('SELECT * FROM Meetings WHERE id = ?').get(dbId);
+    if (!meeting) continue;
+
+    // Delete from DB
+    db.prepare('DELETE FROM Meetings WHERE id = ?').run(dbId);
+    db.prepare('DELETE FROM Transcripts WHERE meeting_id = ?').run(dbId);
+    deletedCount++;
+
+    // Delete meeting folder from disk
+    const folderPath = meeting.video_file_path
+      ? path.dirname(meeting.video_file_path)
+      : meeting.transcript_path
+        ? path.dirname(meeting.transcript_path)
+        : null;
+
+    if (folderPath && fs.existsSync(folderPath)) {
+      try {
+        await fsPromises.rm(folderPath, { recursive: true, force: true });
+      } catch (err) {
+        console.error(`[Main] Failed to delete meeting folder ${folderPath}:`, err);
+      }
+    }
+  }
+
+  return { success: true, deletedCount };
+});
+
+ipcMain.handle('auto-title-meeting', async (_event, { dbId }) => {
+  const db = getDB();
+  const meeting = db.prepare('SELECT * FROM Meetings WHERE id = ?').get(dbId);
+  if (!meeting) throw new Error('Meeting not found');
+
+  const transcriptEntries = await readJsonFile(meeting.transcript_path);
+  if (!Array.isArray(transcriptEntries) || transcriptEntries.length === 0) {
+    throw new Error('Transcript is not available');
+  }
+
+  // Take first ~50 lines for title generation (enough context, not too much)
+  const sampleLines = transcriptEntries
+    .filter((e) => e.text && e.text.trim())
+    .slice(0, 50)
+    .map((e) => `${e.speakerLabel || 'Speaker'}: ${e.text}`)
+    .join('\n');
+
+  const { generateGeminiJson } = await import('./ai/providers/gemini.js');
+  const response = await generateGeminiJson({
+    model: AI_CONFIG.models.liveGujarati,
+    prompt: [
+      'Generate a short, professional meeting title from this transcript excerpt.',
+      'Return JSON only: {"title": "string"}',
+      'Title: 3-8 words, main topic, professional language, no dates.',
+      '',
+      'Transcript:',
+      sampleLines,
+    ].join('\n'),
+    maxOutputTokens: 100,
+  });
+
+  const parsed = JSON.parse(response.text);
+  const newTitle = typeof parsed?.title === 'string' && parsed.title.trim()
+    ? parsed.title.trim()
+    : 'Untitled Meeting';
+
+  // Update DB
+  db.prepare('UPDATE Meetings SET title = ? WHERE id = ?').run(newTitle, dbId);
+
+  // Update artifacts.json
+  if (meeting.artifacts_path && fs.existsSync(meeting.artifacts_path)) {
+    try {
+      const raw = await fsPromises.readFile(meeting.artifacts_path, 'utf8');
+      const artifacts = JSON.parse(raw);
+      artifacts.title = newTitle;
+      await fsPromises.writeFile(meeting.artifacts_path, JSON.stringify(artifacts, null, 2), 'utf8');
+    } catch {
+      // Non-critical
+    }
+  }
+
+  return { title: newTitle };
+});
+
 function getFinalFileName(startTime, title) {
   const start = new Date(startTime);
   const durationMs = Date.now() - startTime;
@@ -474,4 +588,53 @@ function runFFmpegRemux(inputPath, outputPath) {
       }
     });
   });
+}
+
+async function autoGenerateTitle(dbId, transcriptEntries) {
+  const sampleLines = transcriptEntries
+    .filter((e) => e.text && e.text.trim())
+    .slice(0, 50)
+    .map((e) => `${e.speakerLabel || 'Speaker'}: ${e.text}`)
+    .join('\n');
+
+  if (!sampleLines) return;
+
+  const { generateGeminiJson } = await import('./ai/providers/gemini.js');
+  const response = await generateGeminiJson({
+    model: AI_CONFIG.models.liveGujarati,
+    prompt: [
+      'Generate a short, professional meeting title from this transcript excerpt.',
+      'Return JSON only: {"title": "string"}',
+      'Title: 3-8 words, main topic, professional language, no dates.',
+      '',
+      'Transcript:',
+      sampleLines,
+    ].join('\n'),
+    maxOutputTokens: 100,
+  });
+
+  const parsed = JSON.parse(response.text);
+  const newTitle = typeof parsed?.title === 'string' && parsed.title.trim()
+    ? parsed.title.trim()
+    : null;
+
+  if (!newTitle) return;
+
+  const db = getDB();
+  db.prepare('UPDATE Meetings SET title = ? WHERE id = ?').run(newTitle, dbId);
+
+  // Update artifacts.json title
+  const meeting = db.prepare('SELECT artifacts_path FROM Meetings WHERE id = ?').get(dbId);
+  if (meeting?.artifacts_path && fs.existsSync(meeting.artifacts_path)) {
+    try {
+      const raw = await fsPromises.readFile(meeting.artifacts_path, 'utf8');
+      const artifacts = JSON.parse(raw);
+      artifacts.title = newTitle;
+      await fsPromises.writeFile(meeting.artifacts_path, JSON.stringify(artifacts, null, 2), 'utf8');
+    } catch { /* non-critical */ }
+  }
+
+  // Notify renderer so PostMeetingDashboard can update
+  emitToRenderer('meeting-title-updated', { dbId, title: newTitle });
+  console.log(`[Main] Auto-generated title for meeting ${dbId}: "${newTitle}"`);
 }

@@ -25,6 +25,7 @@ function App() {
   const [showPostMeeting, setShowPostMeeting] = useState(false);
   const [currentMeeting, setCurrentMeeting] = useState<CurrentMeetingInfo | null>(null);
   const [lastMeeting, setLastMeeting] = useState<CurrentMeetingInfo | null>(null);
+  const [reviewMeeting, setReviewMeeting] = useState<{ dbId: number; title: string } | null>(null);
   const stopFnRef = useRef<(() => Promise<void>) | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
 
@@ -66,8 +67,18 @@ function App() {
   };
 
   const handleNewMeeting = () => {
+    if (reviewMeeting) {
+      setReviewMeeting(null);
+      setActiveTab('past-meetings');
+      return;
+    }
     setShowPostMeeting(false);
     setLastMeeting(null);
+  };
+
+  const handleOpenPastMeeting = (dbId: number, title: string) => {
+    setReviewMeeting({ dbId, title });
+    setActiveTab('dashboard');
   };
 
   if (!user) {
@@ -102,6 +113,18 @@ function App() {
             listenerName={user.listener_name || user.username}
           />
         </>
+      );
+    }
+
+    if (reviewMeeting) {
+      return (
+        <PostMeetingDashboard
+          key={`review-${reviewMeeting.dbId}`}
+          meetingTitle={reviewMeeting.title}
+          meetingDbId={reviewMeeting.dbId}
+          onNewMeeting={handleNewMeeting}
+          isReview
+        />
       );
     }
 
@@ -178,7 +201,7 @@ function App() {
             style={{ display: activeTab === 'past-meetings' ? 'flex' : 'none' }}
             aria-hidden={activeTab !== 'past-meetings'}
           >
-            <PastMeetings />
+            <PastMeetings onOpenMeeting={handleOpenPastMeeting} />
           </section>
           <section
             className="tab-panel"

@@ -29,6 +29,9 @@ declare global {
       getMeetings: () => Promise<MeetingRecord[]>;
       getMeetingArtifacts: (data: { dbId: number }) => Promise<MeetingArtifactsResponse | null>;
       exportMeetingMom: (data: { dbId: number; format: 'pdf' | 'markdown' }) => Promise<ExportMeetingResponse>;
+      renameMeeting: (data: { dbId: number; title: string }) => Promise<{ success: boolean }>;
+      deleteMeetings: (data: { dbIds: number[] }) => Promise<{ success: boolean; deletedCount: number }>;
+      autoTitleMeeting: (data: { dbId: number }) => Promise<{ title: string }>;
       openInExplorer: (filePath: string) => Promise<void>;
       register: (data: { username: string; email: string; password: string }) => Promise<{ success: boolean; userId?: number; error?: string }>;
       login: (data: { email: string; password: string }) => Promise<{ success: boolean; user?: { id: number; username: string; email: string; listener_name: string }; error?: string }>;
@@ -48,6 +51,8 @@ declare global {
       offLiveInsights: () => void;
       onMeetingArtifactsUpdated: (callback: (payload: { meetingId: number; payload: import('./meeting').MeetingArtifacts | null }) => void) => void;
       offMeetingArtifactsUpdated: () => void;
+      onMeetingTitleUpdated: (callback: (payload: { dbId: number; title: string }) => void) => void;
+      offMeetingTitleUpdated: () => void;
       askQuickLook: (data: { meetingId: number; question: string; history: QuickLookHistoryItem[] }) => Promise<QuickLookResponse>;
       log: (level: 'info' | 'warn' | 'error', ...args: unknown[]) => void;
     };

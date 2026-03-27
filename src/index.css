@@ -412,10 +412,69 @@
   flex-direction: column;
   gap: 8px;
 }
+
+/* ── Toolbar ────────────────────────────── */
+.pm-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.pm-search {
+  flex: 1;
+  min-width: 200px;
+  margin-bottom: 0;
+}
+.pm-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pm-toolbar-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.pm-toolbar-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.pm-toolbar-btn-danger {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+}
+.pm-toolbar-btn-danger:hover {
+  background: var(--danger);
+  color: white;
+}
+.pm-confirm-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.pm-confirm-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--danger);
+}
+
+/* ── Card ───────────────────────────────── */
 .meeting-card {
   display: flex;
   align-items: center;
   padding: 14px 18px;
+  gap: 12px;
   background: var(--bg-primary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius);
@@ -427,12 +486,121 @@
   background: var(--accent-glow);
   box-shadow: 0 0 0 3px var(--accent-glow);
 }
+.meeting-card-selected {
+  border-color: var(--accent-dark);
+  background: var(--accent-glow);
+}
+.meeting-card-deleting {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+/* ── Checkbox ───────────────────────────── */
+.mc-checkbox-wrap {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.mc-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-dark);
+  cursor: pointer;
+}
+
+/* ── Title row ──────────────────────────── */
+.mc-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
 .meeting-card-title {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-primary);
-  margin: 0 0 4px;
+  margin: 0;
 }
+.mc-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+.meeting-card:hover .mc-icon-btn {
+  opacity: 1;
+}
+.mc-icon-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.mc-icon-btn-sparkle:hover {
+  color: var(--accent-dark);
+}
+.mc-icon-btn-spin {
+  opacity: 1;
+  animation: spin 1s linear infinite;
+  color: var(--accent-dark);
+}
+
+/* ── Inline edit ────────────────────────── */
+.mc-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.mc-edit-input {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--accent-dark);
+  border-radius: 4px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+.mc-edit-save,
+.mc-edit-cancel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.mc-edit-save {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.mc-edit-save:hover {
+  background: var(--accent-dark);
+}
+.mc-edit-cancel {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+.mc-edit-cancel:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ── Meta ───────────────────────────────── */
 .meeting-card-meta {
   display: flex;
   gap: 14px;
@@ -446,14 +614,60 @@
 }
 .meeting-card-info {
   flex: 1;
+  min-width: 0;
 }
-.meeting-card-action {
+
+/* ── Action buttons ─────────────────────── */
+.meeting-card-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+.meeting-card-btn {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.meeting-card-btn-view {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+.meeting-card-btn-view:hover {
+  background: var(--accent-dark);
+  box-shadow: 0 2px 8px var(--accent-glow-strong);
+}
+.meeting-card-btn-folder {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  padding: 6px 8px;
+}
+.meeting-card-btn-folder:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.meeting-card-btn-delete {
+  background: transparent;
   color: var(--text-muted);
-  transition: color 0.15s ease;
+  padding: 6px 8px;
+  opacity: 0;
 }
-.meeting-card:hover .meeting-card-action {
-  color: var(--accent-dark);
+.meeting-card:hover .meeting-card-btn-delete {
+  opacity: 1;
 }
+.meeting-card-btn-delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+}
+
 
 /* ═══════════════════════════════════════════
    SETTINGS

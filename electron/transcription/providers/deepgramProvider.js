@@ -6,6 +6,7 @@ import {
   getTimestamp,
   wait,
 } from '../providerUtils.js';
+import { normalizeText } from '../../text/normalize.js';
 
 const require = createRequire(import.meta.url);
 const { DeepgramClient } = require('@deepgram/sdk');
@@ -148,7 +149,7 @@ export async function createDeepgramSession(meetingId, { mainWindow, onFinalEntr
     const entry = {
       source,
       speakerId,
-      transcript: alternative.transcript.trim(),
+      transcript: normalizeText(alternative.transcript),
       timestamp: getTimestamp(),
       isFinal,
       interim: !isFinal,

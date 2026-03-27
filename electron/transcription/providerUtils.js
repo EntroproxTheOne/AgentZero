@@ -1,3 +1,5 @@
+import { normalizeText } from '../text/normalize.js';
+
 export function createDeferred() {
   let resolve;
   let reject;
@@ -29,7 +31,7 @@ export function buildPersistedEntry(entry) {
     source: entry.source,
     speakerLabel,
     speakerId: entry.speakerId,
-    text: entry.transcript,
+    text: normalizeText(entry.transcript),
     isFinal: true,
     languageCode: entry.languageCode ?? null,
     languageProbability: entry.languageProbability ?? null,

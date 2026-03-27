@@ -2,21 +2,40 @@ import path from 'path';
 import fs from 'fs/promises';
 import { BrowserWindow } from 'electron';
 import { ensureMinutesOfMeeting } from '../ai/minutesOfMeeting.js';
+import { readArtifactsFile } from '../ai/artifactStore.js';
+import { normalizeText, normalizeTranscriptEntries } from '../text/normalize.js';
 
 export async function exportMeetingMom({
   meeting,
   transcriptEntries,
   format,
 }) {
+  const normalizedTranscriptEntries = normalizeTranscriptEntries(transcriptEntries);
   const session = {
-    title: meeting.title,
+    title: normalizeText(meeting.title),
     startTime: meeting.start_time_ms,
     endTime: meeting.end_time_ms,
-    transcriptEntries,
+    transcriptEntries: normalizedTranscriptEntries,
     artifactsPath: meeting.artifacts_path,
   };
 
-  const minutes = await ensureMinutesOfMeeting(session);
+  let minutes;
+  try {
+    minutes = await ensureMinutesOfMeeting(session);
+  } catch (error) {
+    const artifacts = await readArtifactsFile(meeting.artifacts_path);
+    const fallbackContent = buildExportFallbackContent(meeting, artifacts?.highlights);
+    if (!fallbackContent) {
+      throw error;
+    }
+    minutes = {
+      status: 'ready',
+      updatedAt: new Date().toISOString(),
+      error: null,
+      content: fallbackContent,
+    };
+  }
+
   if (!minutes?.content) {
     throw new Error('Minutes of Meeting content is not available');
   }
@@ -29,20 +48,49 @@ export async function exportMeetingMom({
   }
 
   if (format === 'markdown') {
-    const markdown = renderMomMarkdown({ meeting, transcriptEntries, content: minutes.content });
+    const markdown = renderMomMarkdown({ meeting, transcriptEntries: normalizedTranscriptEntries, content: minutes.content });
     const filePath = path.join(outputDir, `${safeBase}-MoM.md`);
     await fs.writeFile(filePath, markdown, 'utf8');
     return { filePath, format };
   }
 
   if (format === 'pdf') {
-    const html = renderMomHtml({ meeting, transcriptEntries, content: minutes.content });
+    const html = renderMomHtml({ meeting, transcriptEntries: normalizedTranscriptEntries, content: minutes.content });
     const filePath = path.join(outputDir, `${safeBase}-MoM.pdf`);
     await writePdfFromHtml(html, filePath);
     return { filePath, format };
   }
 
   throw new Error(`Unsupported export format: ${format}`);
+}
+
+function buildExportFallbackContent(meeting, highlights) {
+  if (!highlights?.summary) {
+    return null;
+  }
+
+  const keyDiscussionPoints = (highlights.keyDiscussionPoints ?? []).map(normalizeText).filter(Boolean);
+  const actionItems = (highlights.actionItems ?? []).map(normalizeText).filter(Boolean);
+
+  return {
+    title: normalizeText(meeting.title) || 'Untitled Meeting',
+    overview: normalizeText(highlights.summary),
+    discussionPoints: keyDiscussionPoints.slice(0, 6),
+    decisions: keyDiscussionPoints
+      .filter((point) => /\b(decided|decision|finalize|finalized|approved|proceed|selected)\b/i.test(point))
+      .slice(0, 6),
+    actionItems: actionItems.slice(0, 8).map((task) => ({
+      task,
+      owner: 'Unassigned',
+      deadline: 'Not specified',
+      status: 'Open',
+      notes: '',
+    })),
+    risksAndBlockers: keyDiscussionPoints
+      .filter((point) => /\b(concern|risk|blocker|difficult|cost|issue|delay|complex)\b/i.test(point))
+      .slice(0, 4),
+    followUps: actionItems.slice(0, 4).map((item) => `Follow up on: ${item}`),
+  };
 }
 
 function renderMomMarkdown({ meeting, transcriptEntries, content }) {
