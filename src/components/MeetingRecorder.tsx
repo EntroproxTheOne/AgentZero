@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Mic, MonitorSmartphone } from 'lucide-react';
 import ConsentModal from './ConsentModal';
-import type { CurrentMeetingInfo } from '../types/meeting';
+import type { CurrentMeetingInfo, RuntimeInfo } from '../types/meeting';
 
 interface DesktopCaptureMediaTrackConstraints extends MediaTrackConstraints {
   mandatory?: {
@@ -45,6 +45,8 @@ export default function MeetingRecorder({
   const [detectedApps, setDetectedApps] = useState<string[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [noAppDetected, setNoAppDetected] = useState(false);
+  const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
+  const [recorderError, setRecorderError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const meetingInfoRef = useRef<CurrentMeetingInfo | null>(null);
@@ -57,6 +59,32 @@ export default function MeetingRecorder({
   const firstVideoChunkLoggedRef = useRef(false);
   const pendingVideoChunkPromisesRef = useRef<Set<Promise<void>>>(new Set());
 
+  useEffect(() => {
+    if (!window.electronAPI) return undefined;
+
+    let isMounted = true;
+    window.electronAPI.getRuntimeInfo()
+      .then((info) => {
+        if (isMounted) {
+          setRuntimeInfo(info);
+        }
+      })
+      .catch(() => {
+        // Runtime info is optional in the renderer.
+      });
+
+    window.electronAPI.onAccessState((info) => {
+      if (isMounted) {
+        setRuntimeInfo(info);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+      window.electronAPI?.offAccessState?.();
+    };
+  }, []);
+
   const handleRecordClick = async () => {
     if (isRecording) {
       await stopRecording();
@@ -65,6 +93,7 @@ export default function MeetingRecorder({
 
     setDetecting(true);
     setNoAppDetected(false);
+    setRecorderError(null);
 
     try {
       const apps = window.electronAPI ? await window.electronAPI.detectMeetingApps() : [];
@@ -107,7 +136,7 @@ export default function MeetingRecorder({
         meetingFolder: meetingInfo.meetingFolder,
       };
 
-      const displayStream = await getDisplayStream(detectedApps);
+      const displayStream = await getDisplayStream(detectedApps, runtimeInfo);
       const voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
 
       const combinedStream = new MediaStream([
@@ -168,6 +197,11 @@ export default function MeetingRecorder({
       window.electronAPI?.log('error', 'Error in startRecording:', message);
       console.error('Error starting recording:', caughtError);
       meetingInfoRef.current = null;
+      setRecorderError(
+        runtimeInfo?.isMac
+          ? `${message}. On macOS, make sure Screen Recording and Microphone access are enabled for AgentZero, then try again.`
+          : message,
+      );
     }
   };
 
@@ -325,6 +359,22 @@ export default function MeetingRecorder({
         </div>
       )}
 
+      {!isRecording && !showConsent && runtimeInfo?.isMac && (
+        <div className="detected-banner detected-banner-warn">
+          <AlertCircle size={16} />
+          <span>
+            macOS test mode: use the native picker, then allow Screen Recording and Microphone permissions if prompted.
+          </span>
+        </div>
+      )}
+
+      {recorderError && (
+        <div className="detected-banner detected-banner-warn">
+          <AlertCircle size={16} />
+          <span>{recorderError}</span>
+        </div>
+      )}
+
       <button
         onClick={() => void handleRecordClick()}
         disabled={detecting}
@@ -340,14 +390,16 @@ export default function MeetingRecorder({
       </button>
 
       <p className="recorder-hint">
-        Click to start. AgentZero will detect running meeting apps, ask for consent, then record the meeting window with audio.
+        {runtimeInfo?.isMac
+          ? 'Click to start. AgentZero will ask for consent, then use the macOS picker to capture the meeting window or screen with audio when available.'
+          : 'Click to start. AgentZero will detect running meeting apps, ask for consent, then record the meeting window with audio.'}
       </p>
     </div>
   );
 }
 
-async function getDisplayStream(detectedApps: string[]) {
-  if (!window.electronAPI || detectedApps.length === 0) {
+async function getDisplayStream(detectedApps: string[], runtimeInfo: RuntimeInfo | null) {
+  if (!window.electronAPI || runtimeInfo?.isMac || detectedApps.length === 0) {
     return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   }
 

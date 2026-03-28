@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && electron .\"",
     "build": "tsc -b && vite build && electron-builder",
+    "build:win": "tsc -b && vite build && electron-builder --win portable",
+    "build:mac": "tsc -b && vite build && electron-builder --mac zip dmg",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -62,6 +64,19 @@
     ],
     "win": {
       "target": "portable"
+    },
+    "mac": {
+      "target": [
+        "zip",
+        "dmg"
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "AgentZero needs microphone access to capture your voice during meetings.",
+        "NSAudioCaptureUsageDescription": "AgentZero needs audio capture access to record meeting audio during tests."
+      }
     }
   }
 }

@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  getRuntimeInfo: () => ipcRenderer.invoke('get-runtime-info'),
   getDesktopSources: () => ipcRenderer.invoke('get-desktop-sources'),
   sendVideoChunk: (meetingId, buffer) =>
     ipcRenderer.send('save-chunk-buffer', { meetingId, buffer }),
@@ -49,6 +50,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('meeting-title-updated', (_event, payload) => callback(payload)),
   offMeetingTitleUpdated: () =>
     ipcRenderer.removeAllListeners('meeting-title-updated'),
+  onAccessState: (callback) =>
+    ipcRenderer.on('access-state', (_event, payload) => callback(payload)),
+  offAccessState: () =>
+    ipcRenderer.removeAllListeners('access-state'),
   askQuickLook: (data) => ipcRenderer.invoke('quicklook-ask', data),
   log: (level, ...args) => ipcRenderer.send('log-from-renderer', level, ...args),
 });

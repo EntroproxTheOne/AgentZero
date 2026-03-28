@@ -7,12 +7,13 @@ import {
   wait,
 } from '../providerUtils.js';
 import { normalizeText } from '../../text/normalize.js';
+import { getConfiguredSecret } from '../../runtimeConfig.js';
 
 const require = createRequire(import.meta.url);
 const { DeepgramClient } = require('@deepgram/sdk');
 
 export async function createDeepgramSession(meetingId, { mainWindow, onFinalEntry }) {
-  const apiKey = process.env.DEEPGRAM_API_KEY;
+  const apiKey = getConfiguredSecret('DEEPGRAM_API_KEY');
   if (!apiKey) {
     console.warn('[Transcriber] DEEPGRAM_API_KEY not set, transcription disabled');
     return null;

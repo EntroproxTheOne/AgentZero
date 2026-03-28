@@ -37,6 +37,23 @@ export interface AppSettings {
   };
 }
 
+export interface RuntimeAccessInfo {
+  allowed: boolean;
+  reason: 'active' | 'expired' | 'disabled' | 'invalid-expiry';
+  expiresAt: string;
+  shutdownMessage: string;
+}
+
+export interface RuntimeInfo {
+  platform: string;
+  isMac: boolean;
+  access: RuntimeAccessInfo;
+  macPermissions: {
+    microphone: string;
+    screen: string;
+  } | null;
+}
+
 export interface JargonInsight {
   id?: string;
   term: string;

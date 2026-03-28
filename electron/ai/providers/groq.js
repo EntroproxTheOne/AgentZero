@@ -1,12 +1,13 @@
 import Groq from 'groq-sdk';
 import { AI_CONFIG } from '../config.js';
+import { getConfiguredSecret } from '../../runtimeConfig.js';
 
 let cachedClient = null;
 
 function getGroqClient() {
   if (cachedClient) return cachedClient;
 
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = getConfiguredSecret('GROQ_API_KEY');
   if (!apiKey) {
     throw new Error('GROQ_API_KEY is not set');
   }

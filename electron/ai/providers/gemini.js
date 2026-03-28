@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { AI_CONFIG } from '../config.js';
+import { getConfiguredSecret } from '../../runtimeConfig.js';
 
 class SlidingWindowRateLimiter {
   constructor(limit, windowMs) {
@@ -38,7 +39,7 @@ let cachedClient = null;
 function getGeminiClient() {
   if (cachedClient) return cachedClient;
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = getConfiguredSecret('GEMINI_API_KEY');
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY is not set');
   }

@@ -7,6 +7,7 @@ import {
   wait,
 } from '../providerUtils.js';
 import { normalizeText } from '../../text/normalize.js';
+import { getConfiguredSecret } from '../../runtimeConfig.js';
 
 function downmixStereoToMono(buffer) {
   const sourceBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
@@ -43,7 +44,7 @@ function createSarvamUrl() {
 }
 
 export async function createSarvamSession(meetingId, { mainWindow, onFinalEntry }) {
-  const apiKey = process.env.SARVAM_API_KEY;
+  const apiKey = getConfiguredSecret('SARVAM_API_KEY');
   if (!apiKey) {
     console.warn('[Transcriber] SARVAM_API_KEY not set, Sarvam transcription disabled');
     return null;

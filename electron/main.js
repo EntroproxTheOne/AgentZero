@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { app, BrowserWindow, desktopCapturer, ipcMain, session, shell } from 'electron';
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
@@ -14,6 +14,7 @@ import { MeetingAiService } from './ai/service.js';
 import { readArtifactsFile } from './ai/artifactStore.js';
 import { exportMeetingMom } from './exporters/momExport.js';
 import { AI_CONFIG } from './ai/config.js';
+import { assertAccessAllowed, getAppAccessSnapshot } from './runtimeConfig.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -22,6 +23,8 @@ let mainWindow = null;
 const meetingSessions = new Map();
 const deepgramAudioDiagnostics = new Set();
 const videoChunkDiagnostics = new Set();
+let accessCheckInterval = null;
+let accessShutdownTriggered = false;
 
 function getMeetingSession(meetingId) {
   return meetingSessions.get(meetingId) ?? null;
@@ -30,6 +33,100 @@ function getMeetingSession(meetingId) {
 function emitToRenderer(channel, payload) {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindow.webContents.send(channel, payload);
+}
+
+function getMacPermissionSnapshot() {
+  if (process.platform !== 'darwin') return null;
+
+  return {
+    microphone: systemPreferences.getMediaAccessStatus('microphone'),
+    screen: systemPreferences.getMediaAccessStatus('screen'),
+  };
+}
+
+function getRuntimeInfo() {
+  const access = getAppAccessSnapshot();
+  return {
+    platform: process.platform,
+    isMac: process.platform === 'darwin',
+    access,
+    macPermissions: getMacPermissionSnapshot(),
+  };
+}
+
+async function triggerAccessShutdown(reason) {
+  if (accessShutdownTriggered) return;
+  accessShutdownTriggered = true;
+
+  console.error('[Access]', reason);
+  emitToRenderer('access-state', getRuntimeInfo());
+
+  if (app.isReady()) {
+    try {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'AgentZero Test Build Expired',
+        message: reason,
+        buttons: ['Close App'],
+        defaultId: 0,
+        noLink: true,
+      });
+    } catch {
+      dialog.showErrorBox('AgentZero Test Build Expired', reason);
+    }
+  }
+
+  if (accessCheckInterval) {
+    clearInterval(accessCheckInterval);
+    accessCheckInterval = null;
+  }
+
+  app.quit();
+  setTimeout(() => app.exit(1), 1000);
+}
+
+function ensureAppAccess(context) {
+  try {
+    assertAccessAllowed();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `Access blocked while handling ${context}`;
+    void triggerAccessShutdown(message);
+    throw error;
+  }
+}
+
+function registerGuardedHandle(channel, handler) {
+  ipcMain.handle(channel, async (...args) => {
+    ensureAppAccess(channel);
+    return handler(...args);
+  });
+}
+
+function registerGuardedEvent(channel, handler) {
+  ipcMain.on(channel, (...args) => {
+    try {
+      ensureAppAccess(channel);
+    } catch {
+      return;
+    }
+
+    handler(...args);
+  });
+}
+
+function configureDisplayMediaHandler() {
+  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
+    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
+      const screenSource = sources.find((source) => source.id.startsWith('screen:')) || sources[0];
+      if (screenSource) {
+        callback({ video: screenSource, audio: 'loopback' });
+      } else {
+        callback({});
+      }
+    });
+  }, {
+    useSystemPicker: process.platform === 'darwin',
+  });
 }
 
 const aiService = new MeetingAiService({
@@ -62,18 +159,25 @@ function createWindow() {
 
 app.whenReady().then(() => {
   initDB();
-  createWindow();
 
-  session.defaultSession.setDisplayMediaRequestHandler((_request, callback) => {
-    desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
-      const screenSource = sources.find((source) => source.id.startsWith('screen:')) || sources[0];
-      if (screenSource) {
-        callback({ video: screenSource, audio: 'loopback' });
-      } else {
-        callback({});
-      }
-    });
-  });
+  const access = getAppAccessSnapshot();
+  if (!access.allowed) {
+    void triggerAccessShutdown(access.shutdownMessage);
+    return;
+  }
+
+  createWindow();
+  configureDisplayMediaHandler();
+
+  accessCheckInterval = setInterval(() => {
+    const latestAccess = getAppAccessSnapshot();
+    if (!latestAccess.allowed) {
+      void triggerAccessShutdown(latestAccess.shutdownMessage);
+      return;
+    }
+
+    emitToRenderer('access-state', getRuntimeInfo());
+  }, 30000);
 
   ipcMain.on('window-minimize', () => mainWindow?.minimize());
   ipcMain.on('window-maximize', () => {
@@ -88,51 +192,62 @@ app.whenReady().then(() => {
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
+      const latestAccess = getAppAccessSnapshot();
+      if (!latestAccess.allowed) {
+        void triggerAccessShutdown(latestAccess.shutdownMessage);
+        return;
+      }
       createWindow();
     }
   });
 });
 
 app.on('window-all-closed', () => {
+  if (accessCheckInterval) {
+    clearInterval(accessCheckInterval);
+    accessCheckInterval = null;
+  }
+
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-ipcMain.handle('detect-meeting-apps', async () => detectMeetingApps());
+ipcMain.handle('get-runtime-info', async () => getRuntimeInfo());
+registerGuardedHandle('detect-meeting-apps', async () => detectMeetingApps());
 
-ipcMain.handle('auth-register', async (_event, payload) => {
+registerGuardedHandle('auth-register', async (_event, payload) => {
   const { registerUser } = await import('./db.js');
   return registerUser(payload.username, payload.email, payload.password);
 });
 
-ipcMain.handle('auth-login', async (_event, payload) => {
+registerGuardedHandle('auth-login', async (_event, payload) => {
   const { loginUser } = await import('./db.js');
   return loginUser(payload.email, payload.password);
 });
 
-ipcMain.handle('auth-reset-password', async (_event, payload) => {
+registerGuardedHandle('auth-reset-password', async (_event, payload) => {
   const { resetPassword } = await import('./db.js');
   return resetPassword(payload.email, payload.newPassword);
 });
 
-ipcMain.handle('update-listener-name', async (_event, payload) => {
+registerGuardedHandle('update-listener-name', async (_event, payload) => {
   const { updateListenerName } = await import('./db.js');
   return updateListenerName(payload.userId, payload.listenerName);
 });
 
-ipcMain.handle('get-app-settings', async () => getAppSettings());
+registerGuardedHandle('get-app-settings', async () => getAppSettings());
 
-ipcMain.handle('update-app-settings', async (_event, payload) => updateAppSettings(payload));
+registerGuardedHandle('update-app-settings', async (_event, payload) => updateAppSettings(payload));
 
-ipcMain.handle('open-in-explorer', async (_event, filePath) => {
+registerGuardedHandle('open-in-explorer', async (_event, filePath) => {
   const { shell } = await import('electron');
   if (fs.existsSync(filePath)) {
     shell.showItemInFolder(filePath);
   }
 });
 
-ipcMain.handle('get-desktop-sources', async () => {
+registerGuardedHandle('get-desktop-sources', async () => {
   const sources = await desktopCapturer.getSources({ types: ['window', 'screen'] });
   return sources.map((source) => ({
     id: source.id,
@@ -141,7 +256,7 @@ ipcMain.handle('get-desktop-sources', async () => {
   }));
 });
 
-ipcMain.on('save-chunk-buffer', (_event, message) => {
+registerGuardedEvent('save-chunk-buffer', (_event, message) => {
   const { meetingId, buffer } = message;
   const sessionState = getMeetingSession(meetingId);
   if (!sessionState || !buffer) return;
@@ -166,13 +281,13 @@ ipcMain.on('save-chunk-buffer', (_event, message) => {
   }
 });
 
-ipcMain.handle('flush-meeting-writes', async (_event, { meetingId }) => {
+registerGuardedHandle('flush-meeting-writes', async (_event, { meetingId }) => {
   const sessionState = getMeetingSession(meetingId);
   if (!sessionState) return;
   await sessionState.writer.waitForIdle();
 });
 
-ipcMain.handle('start-meeting', async (_event, { title }) => {
+registerGuardedHandle('start-meeting', async (_event, { title }) => {
   const db = getDB();
   const startTime = Date.now();
   const dateIso = new Date(startTime).toISOString();
@@ -243,7 +358,7 @@ ipcMain.handle('start-meeting', async (_event, { title }) => {
   };
 });
 
-ipcMain.handle('start-transcription', async (_event, { meetingId }) => {
+registerGuardedHandle('start-transcription', async (_event, { meetingId }) => {
   await startTranscription(meetingId, {
     mainWindow,
     onFinalEntry: (_entry, allEntries) => {
@@ -255,7 +370,7 @@ ipcMain.handle('start-transcription', async (_event, { meetingId }) => {
   });
 });
 
-ipcMain.on('send-audio-chunk', (_event, message) => {
+registerGuardedEvent('send-audio-chunk', (_event, message) => {
   if (!message?.buffer) return;
   if (!deepgramAudioDiagnostics.has(message.meetingId)) {
     deepgramAudioDiagnostics.add(message.meetingId);
@@ -268,7 +383,7 @@ ipcMain.on('log-from-renderer', (_event, level, ...args) => {
   console.log(`[Renderer-${level}]`, ...args);
 });
 
-ipcMain.handle('stop-transcription', async (_event, { meetingId, dbId }) => {
+registerGuardedHandle('stop-transcription', async (_event, { meetingId, dbId }) => {
   const sessionState = getMeetingSession(meetingId);
   if (!sessionState) return { transcriptPath: null };
 
@@ -280,23 +395,25 @@ ipcMain.handle('stop-transcription', async (_event, { meetingId, dbId }) => {
   deepgramAudioDiagnostics.delete(meetingId);
 
   sessionState.transcriptEntries = result.entries;
-  sessionState.highlightPromise = aiService.generateHighlights(meetingId)
-    .catch((error) => {
-      console.error('[Main] Failed to generate meeting highlights:', error);
-      return null;
-    })
-    .finally(() => {
-      const latestSession = getMeetingSession(meetingId);
-      if (!latestSession) return;
-      latestSession.highlightPromise = null;
-      if (latestSession.status === 'stopped') {
-        meetingSessions.delete(meetingId);
-        aiService.unregisterMeeting(meetingId);
-      }
-    });
+  if (getAppAccessSnapshot().allowed) {
+    sessionState.highlightPromise = aiService.generateHighlights(meetingId)
+      .catch((error) => {
+        console.error('[Main] Failed to generate meeting highlights:', error);
+        return null;
+      })
+      .finally(() => {
+        const latestSession = getMeetingSession(meetingId);
+        if (!latestSession) return;
+        latestSession.highlightPromise = null;
+        if (latestSession.status === 'stopped') {
+          meetingSessions.delete(meetingId);
+          aiService.unregisterMeeting(meetingId);
+        }
+      });
+  }
 
   // Fire-and-forget: auto-generate title if still "Untitled Meeting"
-  if (sessionState.title === 'Untitled Meeting' && result.entries.length > 0) {
+  if (getAppAccessSnapshot().allowed && sessionState.title === 'Untitled Meeting' && result.entries.length > 0) {
     autoGenerateTitle(dbId, result.entries).catch((err) => {
       console.error('[Main] Auto-title generation failed (non-critical):', err?.message || err);
     });
@@ -307,7 +424,7 @@ ipcMain.handle('stop-transcription', async (_event, { meetingId, dbId }) => {
   };
 });
 
-ipcMain.handle('stop-meeting', async (_event, { meetingId, dbId, startTime, title }) => {
+registerGuardedHandle('stop-meeting', async (_event, { meetingId, dbId, startTime, title }) => {
   const sessionState = getMeetingSession(meetingId);
   if (!sessionState) {
     return null;
@@ -369,12 +486,12 @@ ipcMain.handle('stop-meeting', async (_event, { meetingId, dbId, startTime, titl
   };
 });
 
-ipcMain.handle('get-meetings', async () => {
+registerGuardedHandle('get-meetings', async () => {
   const db = getDB();
   return db.prepare('SELECT * FROM Meetings ORDER BY date DESC').all();
 });
 
-ipcMain.handle('get-meeting-artifacts', async (_event, { dbId }) => {
+registerGuardedHandle('get-meeting-artifacts', async (_event, { dbId }) => {
   const db = getDB();
   const meeting = db.prepare('SELECT * FROM Meetings WHERE id = ?').get(dbId);
   if (!meeting) {
@@ -391,7 +508,7 @@ ipcMain.handle('get-meeting-artifacts', async (_event, { dbId }) => {
   };
 });
 
-ipcMain.handle('quicklook-ask', async (_event, payload) => {
+registerGuardedHandle('quicklook-ask', async (_event, payload) => {
   const answer = await aiService.answerQuickLook(payload.meetingId, {
     question: payload.question,
     history: payload.history,
@@ -400,7 +517,7 @@ ipcMain.handle('quicklook-ask', async (_event, payload) => {
   return answer;
 });
 
-ipcMain.handle('export-meeting-mom', async (_event, { dbId, format }) => {
+registerGuardedHandle('export-meeting-mom', async (_event, { dbId, format }) => {
   const db = getDB();
   const meeting = db.prepare('SELECT * FROM Meetings WHERE id = ?').get(dbId);
   if (!meeting) {
@@ -419,7 +536,7 @@ ipcMain.handle('export-meeting-mom', async (_event, { dbId, format }) => {
   });
 });
 
-ipcMain.handle('rename-meeting', async (_event, { dbId, title }) => {
+registerGuardedHandle('rename-meeting', async (_event, { dbId, title }) => {
   const db = getDB();
   db.prepare('UPDATE Meetings SET title = ? WHERE id = ?').run(title, dbId);
 
@@ -439,7 +556,7 @@ ipcMain.handle('rename-meeting', async (_event, { dbId, title }) => {
   return { success: true };
 });
 
-ipcMain.handle('delete-meetings', async (_event, { dbIds }) => {
+registerGuardedHandle('delete-meetings', async (_event, { dbIds }) => {
   const db = getDB();
   let deletedCount = 0;
 
@@ -471,7 +588,7 @@ ipcMain.handle('delete-meetings', async (_event, { dbIds }) => {
   return { success: true, deletedCount };
 });
 
-ipcMain.handle('auto-title-meeting', async (_event, { dbId }) => {
+registerGuardedHandle('auto-title-meeting', async (_event, { dbId }) => {
   const db = getDB();
   const meeting = db.prepare('SELECT * FROM Meetings WHERE id = ?').get(dbId);
   if (!meeting) throw new Error('Meeting not found');

@@ -6,6 +6,7 @@ import type {
   MeetingRecord,
   QuickLookHistoryItem,
   QuickLookResponse,
+  RuntimeInfo,
   TranscriptEntry,
 } from './meeting';
 
@@ -20,6 +21,7 @@ interface DesktopSource {
 declare global {
   interface Window {
     electronAPI: {
+      getRuntimeInfo: () => Promise<RuntimeInfo>;
       getDesktopSources: () => Promise<DesktopSource[]>;
       sendVideoChunk: (meetingId: number, buffer: ArrayBuffer) => void;
       flushMeetingWrites: (data: { meetingId: number }) => Promise<void>;
@@ -53,6 +55,8 @@ declare global {
       offMeetingArtifactsUpdated: () => void;
       onMeetingTitleUpdated: (callback: (payload: { dbId: number; title: string }) => void) => void;
       offMeetingTitleUpdated: () => void;
+      onAccessState: (callback: (payload: RuntimeInfo) => void) => void;
+      offAccessState: () => void;
       askQuickLook: (data: { meetingId: number; question: string; history: QuickLookHistoryItem[] }) => Promise<QuickLookResponse>;
       log: (level: 'info' | 'warn' | 'error', ...args: unknown[]) => void;
     };

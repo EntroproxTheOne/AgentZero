@@ -38,6 +38,11 @@ const BROWSER_TITLE_KEYWORDS = [
  * Returns array of detected app names (e.g. ['Zoom'], ['Google Meet (Chrome)'], or []).
  */
 export async function detectMeetingApps() {
+  if (process.platform === 'darwin') {
+    // macOS test builds fall back to the native picker instead of process/window detection.
+    return [];
+  }
+
   const detected = [];
 
   try {
