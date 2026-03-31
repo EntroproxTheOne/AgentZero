@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="resources/agentzero.png" alt="AgentZero" width="150" />
+</div>
+
 # React + TypeScript + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
