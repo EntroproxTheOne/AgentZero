@@ -1771,6 +1771,27 @@
   line-height: 1.6;
   margin: 0;
 }
+.ai-msg-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+}
+.ai-search-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent-dark);
+  background: var(--accent-glow);
+  border: 1px solid var(--accent-glow-strong);
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
 .ai-msg-user {
   justify-content: flex-end;
 }

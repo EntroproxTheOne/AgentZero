@@ -1,5 +1,6 @@
 import { GoogleGenAI } from '@google/genai';
 import { AI_CONFIG } from '../config.js';
+import { wasGoogleSearchUsed } from '../searchGrounding.js';
 import { getConfiguredSecret } from '../../runtimeConfig.js';
 
 class SlidingWindowRateLimiter {
@@ -106,7 +107,7 @@ export async function generateGeminiJson({
           latencyMs: Date.now() - startedAt,
           raw: response,
           model: candidate,
-          usedSearch: includeSearch,
+          usedSearch: includeSearch && wasGoogleSearchUsed(response),
         };
       } catch (error) {
         failures.push(`${candidate}${includeSearch ? ' with Search' : ''}: ${formatFailure(error)}`);

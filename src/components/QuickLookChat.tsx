@@ -46,7 +46,11 @@ export default function QuickLookChat({ listenerName, meetingId }: QuickLookChat
         history: messages,
       });
 
-      setMessages((previous) => [...previous, { role: 'ai', text: response.answer }]);
+      setMessages((previous) => [...previous, {
+        role: 'ai',
+        text: response.answer,
+        usedSearch: response.usedSearch,
+      }]);
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : 'QuickLook could not answer right now.';
       setError(message);
@@ -72,8 +76,25 @@ export default function QuickLookChat({ listenerName, meetingId }: QuickLookChat
 
         {messages.map((message, index) => (
           <div key={`${message.role}-${index}`} className={`ai-msg ai-msg-${message.role}`}>
-            {message.role === 'ai' && <Sparkles size={14} className="ai-msg-icon" />}
-            <p>{message.text}</p>
+            {message.role === 'ai' ? (
+              <>
+                <Sparkles size={14} className="ai-msg-icon" />
+                <div className="ai-msg-content">
+                  <p>{message.text}</p>
+                  {message.usedSearch && (
+                    <span
+                      className="ai-search-indicator"
+                      title="Gemini used Google Search grounding for this answer"
+                    >
+                      <Search size={11} />
+                      Web search used
+                    </span>
+                  )}
+                </div>
+              </>
+            ) : (
+              <p>{message.text}</p>
+            )}
           </div>
         ))}
 

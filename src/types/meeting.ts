@@ -119,6 +119,7 @@ export interface MinutesOfMeetingContent {
 export interface QuickLookHistoryItem {
   role: 'user' | 'ai';
   text: string;
+  usedSearch?: boolean;
 }
 
 export interface MeetingArtifacts {
@@ -175,6 +176,7 @@ export interface CurrentMeetingInfo {
 
 export interface QuickLookResponse {
   answer: string;
+  usedSearch: boolean;
 }
 
 export interface ExportMeetingResponse {

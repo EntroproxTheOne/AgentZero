@@ -2,6 +2,7 @@ import { AI_CONFIG, capTranscriptContext } from './config.js';
 import { buildQuickLookPrompt } from './prompts.js';
 import { extractLooseJsonStringField, parseJsonText, validateQuickLook } from './schemas.js';
 import { generateGeminiJson } from './providers/gemini.js';
+import { shouldUseGoogleSearch } from './searchGrounding.js';
 import { updateArtifactsFile } from './artifactStore.js';
 
 export async function answerQuickLookQuestion(session, { question, history }) {
@@ -62,14 +63,13 @@ export async function answerQuickLookQuestion(session, { question, history }) {
     },
   }));
 
-  return quickLook;
+  return {
+    ...quickLook,
+    usedSearch: response.usedSearch,
+  };
 }
 
 function isComplexQuestion(question) {
   return question.trim().length > 180
     || /\b(analy[sz]e|compare|contrast|trade[- ]?off|strategy|detailed|step[- ]by[- ]step|why|how should)\b/i.test(question);
-}
-
-function shouldUseGoogleSearch(question) {
-  return /\b(current|latest|today|recent|news|price|cost|weather|who is|what is the date|look ?up|search|according to|this week|this month|202[4-9])\b/i.test(question);
 }
