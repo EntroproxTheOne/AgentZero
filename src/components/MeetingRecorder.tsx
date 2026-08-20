@@ -235,7 +235,15 @@ export default function MeetingRecorder({
       await audioCtx.resume();
     }
 
-    await audioCtx.audioWorklet.addModule('/pcm-processor.js');
+    const workletModuleUrl = new URL('pcm-processor.js', window.location.href).toString();
+    window.electronAPI.log('info', `Loading PCM worklet from ${workletModuleUrl}`);
+
+    try {
+      await audioCtx.audioWorklet.addModule(workletModuleUrl);
+    } catch (caughtError) {
+      const reason = caughtError instanceof Error ? caughtError.message : String(caughtError);
+      throw new Error(`Unable to load PCM audio worklet from ${workletModuleUrl}: ${reason}`);
+    }
 
     const workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor', {
       numberOfInputs: 1,
