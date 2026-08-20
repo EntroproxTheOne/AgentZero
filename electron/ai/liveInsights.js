@@ -1,7 +1,6 @@
 import { AI_CONFIG, capTranscriptContext } from './config.js';
 import { buildLiveInsightsPrompt } from './prompts.js';
 import { parseJsonText, validateLiveInsights } from './schemas.js';
-import { generateGroqJson } from './providers/groq.js';
 import { generateGeminiJson } from './providers/gemini.js';
 import { updateArtifactsFile } from './artifactStore.js';
 
@@ -61,26 +60,21 @@ export class LiveInsightsCoordinator {
         contextMeta,
       });
 
-      const providerSelection = selectLiveInsightsProvider(session.transcriptEntries);
+      const providerSelection = selectLiveInsightsProvider();
       state.lastProvider = providerSelection.provider;
       state.lastModel = providerSelection.model;
-      const response = providerSelection.provider === 'gemini'
-        ? await generateGeminiJson({
-          model: providerSelection.model,
-          prompt,
-          maxOutputTokens: AI_CONFIG.liveAnalysisMaxCompletionTokens,
-        })
-        : await generateGroqJson({
-          model: providerSelection.model,
-          prompt,
-          maxCompletionTokens: AI_CONFIG.liveAnalysisMaxCompletionTokens,
-        });
+      const response = await generateGeminiJson({
+        tier: 'fast',
+        prompt,
+        maxOutputTokens: AI_CONFIG.liveAnalysisMaxCompletionTokens,
+      });
+      state.lastModel = response.model;
 
       const liveInsights = validateLiveInsights(parseJsonText(response.text));
       const updatedAt = new Date().toISOString();
       const debugEntry = {
         provider: providerSelection.provider,
-        model: providerSelection.model,
+        model: response.model,
         updatedAt,
         latencyMs: response.latencyMs,
         estimatedInputTokens: contextMeta.estimatedTokens,
@@ -120,8 +114,8 @@ export class LiveInsightsCoordinator {
           debug: {
             ...current.debug,
             liveAnalysis: [...current.debug.liveAnalysis.slice(-19), {
-              provider: state.lastProvider ?? 'groq',
-              model: state.lastModel ?? AI_CONFIG.models.live,
+              provider: state.lastProvider ?? 'gemini',
+              model: state.lastModel ?? AI_CONFIG.models.fast,
               updatedAt: new Date().toISOString(),
               error: errorMessage,
             }],
@@ -137,43 +131,11 @@ export class LiveInsightsCoordinator {
   }
 }
 
-function selectLiveInsightsProvider(entries = []) {
-  const languageCode = getDominantLanguageCode(entries);
-  if (
-    languageCode
-    && !AI_CONFIG.liveAnalysisGeminiLiteExcludedLanguages.includes(languageCode)
-  ) {
-    return {
-      provider: 'gemini',
-      model: AI_CONFIG.models.liveGujarati,
-    };
-  }
-
+function selectLiveInsightsProvider() {
   return {
-    provider: 'groq',
-    model: AI_CONFIG.models.live,
+    provider: 'gemini',
+    model: AI_CONFIG.models.fast,
   };
-}
-
-function getDominantLanguageCode(entries = []) {
-  const counts = new Map();
-
-  for (const entry of entries) {
-    const languageCode = entry.languageCode;
-    if (!languageCode) continue;
-    counts.set(languageCode, (counts.get(languageCode) ?? 0) + 1);
-  }
-
-  let topLanguage = null;
-  let topCount = 0;
-  for (const [languageCode, count] of counts.entries()) {
-    if (count > topCount) {
-      topLanguage = languageCode;
-      topCount = count;
-    }
-  }
-
-  return topLanguage;
 }
 
 function buildJargonInsights(previousItems = [], nextItems = [], updatedAt) {

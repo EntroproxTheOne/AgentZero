@@ -23,13 +23,13 @@ export async function createDeepgramSession(meetingId, { mainWindow, onFinalEntr
   const connection = await deepgram.listen.v1.connect({
     model: 'nova-3',
     language: 'multi',
-    multichannel: true,
-    channels: 2,
+    multichannel: 'false',
+    channels: 1,
     encoding: 'linear16',
     sample_rate: 16000,
-    diarize: true,
-    smart_format: true,
-    interim_results: true,
+    diarize_model: 'latest',
+    smart_format: 'true',
+    interim_results: 'true',
     endpointing: 500,
   });
 
@@ -136,14 +136,16 @@ export async function createDeepgramSession(meetingId, { mainWindow, onFinalEntr
     session.lastResultAt = Date.now();
 
     const isFinal = Boolean(data.is_final);
-    const channelIndex = data.channel_index?.[0] ?? 0;
-    const source = channelIndex === 0 ? 'you' : 'meeting';
+    // The application intentionally sends one microphone-only channel. The
+    // diarizer can distinguish voices in that signal, but cannot know which
+    // voice belongs to the local user without a separate audio channel.
+    const source = 'meeting';
     const alternative = data.channel?.alternatives?.[0];
     if (!alternative?.transcript?.trim()) {
       return;
     }
 
-    const speakerId = source === 'meeting' && alternative.words?.[0]?.speaker != null
+    const speakerId = alternative.words?.[0]?.speaker != null
       ? alternative.words[0].speaker
       : null;
 

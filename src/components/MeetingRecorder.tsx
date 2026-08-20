@@ -45,10 +45,12 @@ export default function MeetingRecorder({
   const [detectedApps, setDetectedApps] = useState<string[]>([]);
   const [detecting, setDetecting] = useState(false);
   const [noAppDetected, setNoAppDetected] = useState(false);
+  const [screenRecordingEnabled, setScreenRecordingEnabled] = useState(false);
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [recorderError, setRecorderError] = useState<string | null>(null);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
   const meetingInfoRef = useRef<CurrentMeetingInfo | null>(null);
   const titleRef = useRef('Untitled Meeting');
   const isStoppingRef = useRef(false);
@@ -96,14 +98,17 @@ export default function MeetingRecorder({
     setRecorderError(null);
 
     try {
-      const apps = window.electronAPI ? await window.electronAPI.detectMeetingApps() : [];
+      const settings = await window.electronAPI?.getAppSettings();
+      const shouldRecordScreen = Boolean(settings?.screenRecordingEnabled);
+      setScreenRecordingEnabled(shouldRecordScreen);
+      const apps = shouldRecordScreen ? await window.electronAPI.detectMeetingApps() : [];
       setDetectedApps(apps);
       titleRef.current = apps.length > 0 ? `${apps[0]} Meeting` : 'Untitled Meeting';
-      setNoAppDetected(apps.length === 0);
+      setNoAppDetected(shouldRecordScreen && apps.length === 0);
     } catch {
       setDetectedApps([]);
       titleRef.current = 'Untitled Meeting';
-      setNoAppDetected(true);
+      setNoAppDetected(screenRecordingEnabled);
     } finally {
       setDetecting(false);
       setShowConsent(true);
@@ -133,59 +138,68 @@ export default function MeetingRecorder({
         transcriptPath: meetingInfo.transcriptPath,
         artifactsPath: meetingInfo.artifactsPath,
         startTime: meetingInfo.startTime,
+        recordScreen: meetingInfo.recordScreen,
         meetingFolder: meetingInfo.meetingFolder,
       };
 
-      const displayStream = await getDisplayStream(detectedApps, runtimeInfo);
       const voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const displayStream = meetingInfo.recordScreen
+        ? await getDisplayStream(detectedApps, runtimeInfo)
+        : null;
 
-      const combinedStream = new MediaStream([
-        ...displayStream.getVideoTracks(),
-        ...displayStream.getAudioTracks(),
-        ...voiceStream.getAudioTracks(),
-      ]);
-
-      const mediaRecorder = new MediaRecorder(combinedStream, {
-        mimeType: 'video/webm; codecs=vp9',
-      });
-
-      mediaRecorderRef.current = mediaRecorder;
+      const recordingStream = displayStream
+        ? new MediaStream([
+          ...displayStream.getVideoTracks(),
+          ...voiceStream.getAudioTracks(),
+        ])
+        : voiceStream;
+      recordingStreamRef.current = recordingStream;
+      mediaRecorderRef.current = null;
       isStoppingRef.current = false;
 
-      mediaRecorder.ondataavailable = async (event) => {
-        if (event.data.size <= 0 || !meetingInfoRef.current) return;
-
-        const chunkPromise = (async () => {
-          const arrayBuffer = await event.data.arrayBuffer();
-          if (arrayBuffer.byteLength === 0 || !meetingInfoRef.current) return;
-
-          if (!firstVideoChunkLoggedRef.current) {
-            firstVideoChunkLoggedRef.current = true;
-            window.electronAPI?.log(
-              'info',
-              `First video chunk emitted by MediaRecorder for meeting ${meetingInfoRef.current.meetingId} (${arrayBuffer.byteLength} bytes)`,
-            );
-          }
-
-          window.electronAPI.sendVideoChunk(meetingInfoRef.current.meetingId, arrayBuffer);
-        })().catch((error) => {
-          const message = error instanceof Error ? error.message : String(error);
-          window.electronAPI?.log('error', 'Failed to process video chunk:', message);
+      if (displayStream) {
+        const mediaRecorder = new MediaRecorder(recordingStream, {
+          mimeType: 'video/webm; codecs=vp9',
         });
 
-        pendingVideoChunkPromisesRef.current.add(chunkPromise);
-        chunkPromise.finally(() => {
-          pendingVideoChunkPromisesRef.current.delete(chunkPromise);
-        });
-      };
+        mediaRecorderRef.current = mediaRecorder;
+        mediaRecorder.ondataavailable = async (event) => {
+          if (event.data.size <= 0 || !meetingInfoRef.current) return;
 
-      mediaRecorder.start(1000);
-      await startPcmPipeline(voiceStream, displayStream, meetingInfoRef.current.meetingId);
+          const chunkPromise = (async () => {
+            const arrayBuffer = await event.data.arrayBuffer();
+            if (arrayBuffer.byteLength === 0 || !meetingInfoRef.current) return;
+
+            if (!firstVideoChunkLoggedRef.current) {
+              firstVideoChunkLoggedRef.current = true;
+              window.electronAPI?.log(
+                'info',
+                `First video chunk emitted by MediaRecorder for meeting ${meetingInfoRef.current.meetingId} (${arrayBuffer.byteLength} bytes)`,
+              );
+            }
+
+            window.electronAPI.sendVideoChunk(meetingInfoRef.current.meetingId, arrayBuffer);
+          })().catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            window.electronAPI?.log('error', 'Failed to process video chunk:', message);
+          });
+
+          pendingVideoChunkPromisesRef.current.add(chunkPromise);
+          chunkPromise.finally(() => {
+            pendingVideoChunkPromisesRef.current.delete(chunkPromise);
+          });
+        };
+
+        mediaRecorder.start(1000);
+      }
+
+      await startPcmPipeline(voiceStream, meetingInfoRef.current.meetingId);
 
       setIsRecording(true);
-      onRecordingStarted?.(combinedStream, stopRecording, titleRef.current, meetingInfoRef.current);
+      setScreenRecordingEnabled(meetingInfo.recordScreen);
+      onRecordingStarted?.(recordingStream, stopRecording, titleRef.current, meetingInfoRef.current);
 
-      const displayVideoTrack = displayStream.getVideoTracks()[0];
+      const displayVideoTrack = displayStream?.getVideoTracks()[0];
       if (displayVideoTrack) {
         displayVideoTrack.onended = () => {
           window.electronAPI?.log('warn', 'Display stream track ended naturally');
@@ -196,6 +210,9 @@ export default function MeetingRecorder({
       const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
       window.electronAPI?.log('error', 'Error in startRecording:', message);
       console.error('Error starting recording:', caughtError);
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      mediaRecorderRef.current = null;
       meetingInfoRef.current = null;
       setRecorderError(
         runtimeInfo?.isMac
@@ -207,7 +224,6 @@ export default function MeetingRecorder({
 
   const startPcmPipeline = async (
     micStream: MediaStream,
-    meetingStream: MediaStream,
     meetingId: number,
   ) => {
     if (!window.electronAPI) return;
@@ -222,7 +238,7 @@ export default function MeetingRecorder({
     await audioCtx.audioWorklet.addModule('/pcm-processor.js');
 
     const workletNode = new AudioWorkletNode(audioCtx, 'pcm-processor', {
-      numberOfInputs: 2,
+      numberOfInputs: 1,
       numberOfOutputs: 0,
     });
 
@@ -230,11 +246,6 @@ export default function MeetingRecorder({
 
     const micSource = audioCtx.createMediaStreamSource(micStream);
     micSource.connect(workletNode, 0, 0);
-
-    if (meetingStream.getAudioTracks().length > 0) {
-      const meetingSource = audioCtx.createMediaStreamSource(meetingStream);
-      meetingSource.connect(workletNode, 0, 1);
-    }
 
     await window.electronAPI.startTranscription({ meetingId });
 
@@ -279,31 +290,37 @@ export default function MeetingRecorder({
     isStoppingRef.current = true;
 
     const recorder = mediaRecorderRef.current;
+    const recordingStream = recordingStreamRef.current;
     const meetingInfo = meetingInfoRef.current;
-    if (!recorder || !meetingInfo) {
+    if (!meetingInfo || !recordingStream) {
       isStoppingRef.current = false;
       return;
     }
 
-    await new Promise<void>((resolve) => {
-      recorder.onstop = () => resolve();
-      try {
-        recorder.stop();
-      } catch {
-        resolve();
-      }
-    });
+    if (recorder) {
+      await new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+        try {
+          recorder.stop();
+        } catch {
+          resolve();
+        }
+      });
+    }
 
     const pendingVideoChunks = Array.from(pendingVideoChunkPromisesRef.current);
     if (pendingVideoChunks.length > 0) {
       await Promise.allSettled(pendingVideoChunks);
     }
 
-    await window.electronAPI.flushMeetingWrites({ meetingId: meetingInfo.meetingId });
+    if (recorder) {
+      await window.electronAPI.flushMeetingWrites({ meetingId: meetingInfo.meetingId });
+    }
     await flushPcmPipeline();
 
-    recorder.stream.getTracks().forEach((track) => track.stop());
+    recordingStream.getTracks().forEach((track) => track.stop());
     mediaRecorderRef.current = null;
+    recordingStreamRef.current = null;
 
     workletNodeRef.current?.disconnect();
     workletNodeRef.current?.port.close();
@@ -390,9 +407,11 @@ export default function MeetingRecorder({
       </button>
 
       <p className="recorder-hint">
-        {runtimeInfo?.isMac
-          ? 'Click to start. AgentZero will ask for consent, then use the macOS picker to capture the meeting window or screen with audio when available.'
-          : 'Click to start. AgentZero will detect running meeting apps, ask for consent, then record the meeting window with audio.'}
+        {!screenRecordingEnabled
+          ? 'Click to start. AgentZero will capture your microphone and create a transcript without recording the screen or device audio.'
+          : runtimeInfo?.isMac
+          ? 'Click to start. AgentZero will ask for consent, then use the macOS picker to capture video while keeping transcription microphone-only.'
+          : 'Click to start. AgentZero will detect running meeting apps, ask for consent, then record video while keeping transcription microphone-only.'}
       </p>
     </div>
   );
@@ -400,7 +419,7 @@ export default function MeetingRecorder({
 
 async function getDisplayStream(detectedApps: string[], runtimeInfo: RuntimeInfo | null) {
   if (!window.electronAPI || runtimeInfo?.isMac || detectedApps.length === 0) {
-    return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    return navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
   }
 
   const sources = await window.electronAPI.getDesktopSources();
@@ -420,7 +439,7 @@ async function getDisplayStream(detectedApps: string[], runtimeInfo: RuntimeInfo
   });
 
   if (!matchingSource) {
-    return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+    return navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
   }
 
   const desktopMediaDevices = navigator.mediaDevices as MediaDevices & {
@@ -428,7 +447,7 @@ async function getDisplayStream(detectedApps: string[], runtimeInfo: RuntimeInfo
   };
 
   return desktopMediaDevices.getUserMedia({
-    audio: { mandatory: { chromeMediaSource: 'desktop' } },
+    audio: false,
     video: {
       mandatory: {
         chromeMediaSource: 'desktop',

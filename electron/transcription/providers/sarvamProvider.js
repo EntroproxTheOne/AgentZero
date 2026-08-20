@@ -9,29 +9,6 @@ import {
 import { normalizeText } from '../../text/normalize.js';
 import { getConfiguredSecret } from '../../runtimeConfig.js';
 
-function downmixStereoToMono(buffer) {
-  const sourceBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
-  if (sourceBuffer.byteLength < 4) {
-    return sourceBuffer;
-  }
-
-  const stereoSamples = new Int16Array(
-    sourceBuffer.buffer,
-    sourceBuffer.byteOffset,
-    Math.floor(sourceBuffer.byteLength / 2),
-  );
-
-  const monoBuffer = Buffer.allocUnsafe(Math.floor(stereoSamples.length / 2) * 2);
-  for (let index = 0; index < stereoSamples.length; index += 2) {
-    const left = stereoSamples[index] ?? 0;
-    const right = stereoSamples[index + 1] ?? left;
-    const mixed = Math.max(-32768, Math.min(32767, Math.round((left + right) / 2)));
-    monoBuffer.writeInt16LE(mixed, index);
-  }
-
-  return monoBuffer;
-}
-
 function createSarvamUrl() {
   const url = new URL('wss://api.sarvam.ai/speech-to-text/ws');
   url.searchParams.set('model', 'saaras:v3');
@@ -75,7 +52,7 @@ export async function createSarvamSession(meetingId, { mainWindow, onFinalEntry 
     firstFinalLogged: false,
     lastCommittedTranscript: '',
     async sendChunk(buffer) {
-      const monoBuffer = downmixStereoToMono(buffer);
+      const monoBuffer = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer);
       const payload = JSON.stringify({
         audio: {
           data: monoBuffer.toString('base64'),

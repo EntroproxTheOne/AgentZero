@@ -28,6 +28,7 @@ export interface SupportedLanguage {
 export interface AppSettings {
   transcriptionProvider: 'deepgram' | 'sarvam';
   nativeIndiaMode: boolean;
+  screenRecordingEnabled: boolean;
   sarvam: {
     isBeta: boolean;
     model: string;
@@ -167,6 +168,7 @@ export interface CurrentMeetingInfo {
   transcriptPath: string;
   artifactsPath: string;
   startTime: number;
+  recordScreen: boolean;
   endTime?: number;
   meetingFolder?: string;
 }

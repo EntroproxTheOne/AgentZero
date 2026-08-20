@@ -70,7 +70,8 @@ export function initDB() {
     CREATE TABLE IF NOT EXISTS AppSettings (
       id INTEGER PRIMARY KEY CHECK (id = 1),
       transcription_provider TEXT NOT NULL DEFAULT 'deepgram',
-      india_mode_enabled INTEGER NOT NULL DEFAULT 0
+      india_mode_enabled INTEGER NOT NULL DEFAULT 0,
+      screen_recording_enabled INTEGER NOT NULL DEFAULT 0
     );
   `);
 
@@ -100,6 +101,7 @@ export function initDB() {
   const appSettingsColumns = db.prepare("PRAGMA table_info(AppSettings)").all();
   const hasTranscriptionProvider = appSettingsColumns.some((col) => col.name === 'transcription_provider');
   const hasIndiaModeEnabled = appSettingsColumns.some((col) => col.name === 'india_mode_enabled');
+  const hasScreenRecordingEnabled = appSettingsColumns.some((col) => col.name === 'screen_recording_enabled');
   if (!hasTranscriptionProvider) {
     db.prepare("ALTER TABLE AppSettings ADD COLUMN transcription_provider TEXT NOT NULL DEFAULT 'deepgram'").run();
     console.log('[DB] Added transcription_provider column to AppSettings table');
@@ -108,10 +110,14 @@ export function initDB() {
     db.prepare("ALTER TABLE AppSettings ADD COLUMN india_mode_enabled INTEGER NOT NULL DEFAULT 0").run();
     console.log('[DB] Added india_mode_enabled column to AppSettings table');
   }
+  if (!hasScreenRecordingEnabled) {
+    db.prepare("ALTER TABLE AppSettings ADD COLUMN screen_recording_enabled INTEGER NOT NULL DEFAULT 0").run();
+    console.log('[DB] Added screen_recording_enabled column to AppSettings table');
+  }
 
   db.prepare(`
-    INSERT INTO AppSettings (id, transcription_provider, india_mode_enabled)
-    VALUES (1, 'deepgram', 0)
+    INSERT INTO AppSettings (id, transcription_provider, india_mode_enabled, screen_recording_enabled)
+    VALUES (1, 'deepgram', 0, 0)
     ON CONFLICT(id) DO NOTHING
   `).run();
   
@@ -184,17 +190,19 @@ export function updateListenerName(userId, listenerName) {
 
 export function getAppSettings() {
   const row = db.prepare(`
-    SELECT transcription_provider, india_mode_enabled
+    SELECT transcription_provider, india_mode_enabled, screen_recording_enabled
     FROM AppSettings
     WHERE id = 1
   `).get();
 
   const transcriptionProvider = row?.transcription_provider === 'sarvam' ? 'sarvam' : 'deepgram';
   const nativeIndiaMode = Boolean(row?.india_mode_enabled);
+  const screenRecordingEnabled = Boolean(row?.screen_recording_enabled);
 
   return {
     transcriptionProvider,
     nativeIndiaMode,
+    screenRecordingEnabled,
     sarvam: {
       isBeta: true,
       model: 'saaras:v3',
@@ -205,13 +213,24 @@ export function getAppSettings() {
   };
 }
 
-export function updateAppSettings({ nativeIndiaMode }) {
-  const transcriptionProvider = nativeIndiaMode ? 'sarvam' : 'deepgram';
+export function updateAppSettings({ nativeIndiaMode, screenRecordingEnabled } = {}) {
+  const current = getAppSettings();
+  const nextNativeIndiaMode = typeof nativeIndiaMode === 'boolean'
+    ? nativeIndiaMode
+    : current.nativeIndiaMode;
+  const nextScreenRecordingEnabled = typeof screenRecordingEnabled === 'boolean'
+    ? screenRecordingEnabled
+    : current.screenRecordingEnabled;
+  const transcriptionProvider = nextNativeIndiaMode ? 'sarvam' : 'deepgram';
   db.prepare(`
     UPDATE AppSettings
-    SET transcription_provider = ?, india_mode_enabled = ?
+    SET transcription_provider = ?, india_mode_enabled = ?, screen_recording_enabled = ?
     WHERE id = 1
-  `).run(transcriptionProvider, nativeIndiaMode ? 1 : 0);
+  `).run(
+    transcriptionProvider,
+    nextNativeIndiaMode ? 1 : 0,
+    nextScreenRecordingEnabled ? 1 : 0,
+  );
 
   return getAppSettings();
 }

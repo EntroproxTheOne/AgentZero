@@ -43,7 +43,7 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
     });
 
     const response = await generateGeminiJson({
-      model: AI_CONFIG.models.minutesOfMeeting,
+      tier: 'big',
       prompt,
       maxOutputTokens: AI_CONFIG.minutesOfMeetingMaxCompletionTokens,
     });
@@ -62,7 +62,8 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
       debug: {
         ...current.debug,
         minutesOfMeeting: [...(current.debug?.minutesOfMeeting ?? []).slice(-9), {
-          model: AI_CONFIG.models.minutesOfMeeting,
+          model: response.model,
+          usedSearch: response.usedSearch,
           updatedAt,
           latencyMs: response.latencyMs,
           estimatedInputTokens: contextMeta.estimatedTokens,
@@ -217,7 +218,7 @@ ${truncatedRaw}
 `.trim();
 
       const repairedResponse = await generateGeminiJson({
-        model: AI_CONFIG.models.minutesOfMeeting,
+        tier: 'big',
         prompt: repairPrompt,
         maxOutputTokens: 4096,
       });
@@ -265,7 +266,7 @@ ${truncatedRaw}
 `.trim();
 
       const rebuiltResponse = await generateGeminiJson({
-        model: AI_CONFIG.models.minutesOfMeeting,
+        tier: 'big',
         prompt: rebuildPrompt,
         maxOutputTokens: 4096,
       });

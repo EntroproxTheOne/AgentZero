@@ -6,7 +6,8 @@ const HARD_CODED_SECRETS = Object.freeze({
 });
 
 const ACCESS_CONFIG = Object.freeze({
-  enabled: true,
+  // Keep the test-build access gate disabled for the Windows build.
+  enabled: false,
   // Update this before sharing a test build.
   expiresAt: '2026-04-05T23:59:59+05:30',
   shutdownMessage: 'This AgentZero test build has expired. Please contact the sender for a fresh copy.',
@@ -27,19 +28,10 @@ export function getConfiguredSecret(name) {
 }
 
 export function getAppAccessSnapshot(now = Date.now()) {
-  if (process.platform !== 'darwin') {
+  if (!ACCESS_CONFIG.enabled || process.platform !== 'darwin') {
     return {
       allowed: true,
       reason: 'active',
-      expiresAt: ACCESS_CONFIG.expiresAt,
-      shutdownMessage: ACCESS_CONFIG.shutdownMessage,
-    };
-  }
-
-  if (!ACCESS_CONFIG.enabled) {
-    return {
-      allowed: false,
-      reason: 'disabled',
       expiresAt: ACCESS_CONFIG.expiresAt,
       shutdownMessage: ACCESS_CONFIG.shutdownMessage,
     };

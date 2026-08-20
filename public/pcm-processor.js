@@ -4,7 +4,6 @@ class PCMProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.micAccum = new Float32Array(BATCH_SAMPLES);
-    this.meetingAccum = new Float32Array(BATCH_SAMPLES);
     this.sampleCount = 0;
 
     this.port.onmessage = (event) => {
@@ -19,13 +18,12 @@ class PCMProcessor extends AudioWorkletProcessor {
 
   process(inputs) {
     const micFrame = inputs[0]?.[0];
-    const meetingFrame = inputs[1]?.[0];
 
-    if (!micFrame && !meetingFrame) {
+    if (!micFrame) {
       return true;
     }
 
-    const frameLength = micFrame ? micFrame.length : (meetingFrame ? meetingFrame.length : 128);
+    const frameLength = micFrame.length;
 
     for (let index = 0; index < frameLength; index += 1) {
       if (this.sampleCount >= BATCH_SAMPLES) {
@@ -33,7 +31,6 @@ class PCMProcessor extends AudioWorkletProcessor {
       }
 
       this.micAccum[this.sampleCount] = micFrame ? micFrame[index] : 0;
-      this.meetingAccum[this.sampleCount] = meetingFrame ? meetingFrame[index] : 0;
       this.sampleCount += 1;
     }
 
@@ -41,14 +38,13 @@ class PCMProcessor extends AudioWorkletProcessor {
   }
 
   flush() {
-    const interleaved = new Int16Array(this.sampleCount * 2);
+    const pcm = new Int16Array(this.sampleCount);
 
     for (let index = 0; index < this.sampleCount; index += 1) {
-      interleaved[index * 2] = this.toInt16(this.micAccum[index]);
-      interleaved[index * 2 + 1] = this.toInt16(this.meetingAccum[index]);
+      pcm[index] = this.toInt16(this.micAccum[index]);
     }
 
-    const buffer = interleaved.buffer;
+    const buffer = pcm.buffer;
     this.port.postMessage({ type: 'audio-chunk', buffer }, [buffer]);
 
     this.micAccum = new Float32Array(BATCH_SAMPLES);

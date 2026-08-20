@@ -32,7 +32,7 @@ export async function generateMeetingHighlights(session) {
     });
 
     const response = await generateGeminiJson({
-      model: AI_CONFIG.models.highlights,
+      tier: 'big',
       prompt,
       maxOutputTokens: AI_CONFIG.highlightsMaxCompletionTokens,
     });
@@ -50,7 +50,8 @@ export async function generateMeetingHighlights(session) {
       debug: {
         ...current.debug,
         highlights: [...current.debug.highlights.slice(-9), {
-          model: AI_CONFIG.models.highlights,
+          model: response.model,
+          usedSearch: response.usedSearch,
           updatedAt: new Date().toISOString(),
           latencyMs: response.latencyMs,
           estimatedInputTokens: contextMeta.estimatedTokens,
@@ -72,7 +73,7 @@ export async function generateMeetingHighlights(session) {
       debug: {
         ...current.debug,
         highlights: [...current.debug.highlights.slice(-9), {
-          model: AI_CONFIG.models.highlights,
+          model: AI_CONFIG.models.big,
           updatedAt: new Date().toISOString(),
           error: errorMessage,
         }],

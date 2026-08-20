@@ -280,7 +280,7 @@ export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
                   <button className="meeting-card-btn meeting-card-btn-view" onClick={(e) => { e.stopPropagation(); handleCardClick(meeting); }} title="View dashboard">
                     <Eye size={14} /> View
                   </button>
-                  <button className="meeting-card-btn meeting-card-btn-folder" onClick={(e) => handleOpenFolder(e, meeting.video_file_path)} title="Open folder">
+                  <button className="meeting-card-btn meeting-card-btn-folder" onClick={(e) => handleOpenFolder(e, meeting.video_file_path || meeting.transcript_path)} title="Open folder">
                     <FolderOpen size={14} />
                   </button>
                   <button className="meeting-card-btn meeting-card-btn-delete" onClick={(e) => void handleDeleteSingle(e, meeting.id)} title="Delete">

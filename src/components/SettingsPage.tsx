@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { User, Folder, Palette, Info, Save, Languages } from 'lucide-react';
+import { User, Folder, Palette, Info, Save, Languages, Monitor } from 'lucide-react';
 import type { AppSettings } from '../types/meeting';
 
 interface SettingsPageProps {
@@ -35,6 +35,14 @@ export default function SettingsPage({ user }: SettingsPageProps) {
   const handleIndiaModeToggle = async (enabled: boolean) => {
     if (!window.electronAPI) return;
     const updatedSettings = await window.electronAPI.updateAppSettings({ nativeIndiaMode: enabled });
+    setSettings(updatedSettings);
+    setSettingsSaved(true);
+    setTimeout(() => setSettingsSaved(false), 2000);
+  };
+
+  const handleScreenRecordingToggle = async (enabled: boolean) => {
+    if (!window.electronAPI) return;
+    const updatedSettings = await window.electronAPI.updateAppSettings({ screenRecordingEnabled: enabled });
     setSettings(updatedSettings);
     setSettingsSaved(true);
     setTimeout(() => setSettingsSaved(false), 2000);
@@ -113,6 +121,43 @@ export default function SettingsPage({ user }: SettingsPageProps) {
               <select className="setting-input">
                 <option>Light</option>
               </select>
+            </div>
+          </div>
+        </div>
+
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <Monitor size={18} className="settings-card-icon" />
+            <h4 className="settings-card-title">Screen Recording</h4>
+          </div>
+          <div className="settings-card-body">
+            <div className="setting-row">
+              <label className="setting-label">Record the screen</label>
+              <label className="settings-toggle-row">
+                <div>
+                  <div className="settings-toggle-title">
+                    Screen video
+                    <span className="settings-provider-meta">Off by default</span>
+                  </div>
+                  <div className="settings-toggle-sub">
+                    When off, AgentZero captures microphone audio and transcription only. This applies to the next meeting.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className={`settings-toggle ${settings?.screenRecordingEnabled ? 'settings-toggle-on' : ''}`}
+                  onClick={() => void handleScreenRecordingToggle(!settings?.screenRecordingEnabled)}
+                  aria-pressed={settings?.screenRecordingEnabled ?? false}
+                >
+                  <span className="settings-toggle-knob" />
+                </button>
+              </label>
+              <div className="settings-provider-status">
+                <span className="settings-provider-pill">
+                  {settings?.screenRecordingEnabled ? 'Screen video enabled' : 'Microphone only'}
+                </span>
+                {settingsSaved && <span className="settings-provider-saved">Saved</span>}
+              </div>
             </div>
           </div>
         </div>

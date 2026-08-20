@@ -15,13 +15,18 @@ export const AI_CONFIG = {
   minutesOfMeetingMaxCompletionTokens: 8192,
   quickLookHistoryTurns: 6,
   models: {
-    highlights: 'gemini-2.5-flash',
-    quickLook: 'gemini-2.5-flash',
-    minutesOfMeeting: 'gemini-2.5-flash',
-    live: 'openai/gpt-oss-120b',
-    liveGujarati: 'gemini-2.5-flash-lite',
+    fast: 'gemini-3.5-flash-lite',
+    big: 'gemini-3.7-flash',
+    highlights: 'gemini-3.7-flash',
+    quickLook: 'gemini-3.5-flash-lite',
+    minutesOfMeeting: 'gemini-3.7-flash',
+    live: 'gemini-3.5-flash-lite',
+    liveGujarati: 'gemini-3.5-flash-lite',
   },
-  liveAnalysisGeminiLiteExcludedLanguages: ['en-IN', 'hi-IN'],
+  modelChains: {
+    fast: ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'],
+    big: ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash'],
+  },
 };
 
 export function estimateTokenCount(text) {

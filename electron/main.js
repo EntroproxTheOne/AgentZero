@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
@@ -18,6 +18,12 @@ import { assertAccessAllowed, getAppAccessSnapshot } from './runtimeConfig.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Load the local ignored .env from both development and the packaged app.
+// Process-level environment variables still take precedence because dotenv
+// does not override values that are already present.
+dotenv.config({ path: path.join(__dirname, '../.env') });
+dotenv.config();
 
 let mainWindow = null;
 const meetingSessions = new Map();
@@ -119,7 +125,7 @@ function configureDisplayMediaHandler() {
     desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
       const screenSource = sources.find((source) => source.id.startsWith('screen:')) || sources[0];
       if (screenSource) {
-        callback({ video: screenSource, audio: 'loopback' });
+        callback({ video: screenSource });
       } else {
         callback({});
       }
@@ -259,7 +265,7 @@ registerGuardedHandle('get-desktop-sources', async () => {
 registerGuardedEvent('save-chunk-buffer', (_event, message) => {
   const { meetingId, buffer } = message;
   const sessionState = getMeetingSession(meetingId);
-  if (!sessionState || !buffer) return;
+  if (!sessionState?.writer || !buffer) return;
 
   try {
     const normalizedBuffer = Buffer.isBuffer(buffer)
@@ -283,12 +289,13 @@ registerGuardedEvent('save-chunk-buffer', (_event, message) => {
 
 registerGuardedHandle('flush-meeting-writes', async (_event, { meetingId }) => {
   const sessionState = getMeetingSession(meetingId);
-  if (!sessionState) return;
+  if (!sessionState?.writer) return;
   await sessionState.writer.waitForIdle();
 });
 
 registerGuardedHandle('start-meeting', async (_event, { title }) => {
   const db = getDB();
+  const recordScreen = getAppSettings().screenRecordingEnabled;
   const startTime = Date.now();
   const dateIso = new Date(startTime).toISOString();
   const meetingId = startTime;
@@ -299,7 +306,7 @@ registerGuardedHandle('start-meeting', async (_event, { title }) => {
     fs.mkdirSync(meetingFolder, { recursive: true });
   }
 
-  const tempPath = path.join(meetingFolder, 'temp_video.webm');
+  const tempPath = recordScreen ? path.join(meetingFolder, 'temp_video.webm') : null;
   const transcriptPath = path.join(meetingFolder, 'transcript.json');
   const artifactsPath = path.join(meetingFolder, 'artifacts.json');
 
@@ -336,7 +343,8 @@ registerGuardedHandle('start-meeting', async (_event, { title }) => {
     tempPath,
     transcriptPath,
     artifactsPath,
-    writer: new AsyncChunkWriter(tempPath),
+    writer: recordScreen ? new AsyncChunkWriter(tempPath) : null,
+    recordScreen,
     transcriptEntries: [],
     highlightPromise: null,
     status: 'recording',
@@ -354,6 +362,7 @@ registerGuardedHandle('start-meeting', async (_event, { title }) => {
     transcriptPath,
     artifactsPath,
     startTime,
+    recordScreen,
     title: title || 'Untitled Meeting',
   };
 });
@@ -430,16 +439,20 @@ registerGuardedHandle('stop-meeting', async (_event, { meetingId, dbId, startTim
     return null;
   }
 
-  await sessionState.writer.finalize();
-  if (fs.existsSync(sessionState.tempPath)) {
+  if (sessionState.writer) {
+    await sessionState.writer.finalize();
+  }
+  if (sessionState.tempPath && fs.existsSync(sessionState.tempPath)) {
     await fsyncFile(sessionState.tempPath);
   }
 
   const nameBase = getFinalFileName(startTime, title);
-  const finalName = `${nameBase}.webm`;
-  const finalPath = path.join(sessionState.meetingFolder, finalName);
+  const finalName = sessionState.recordScreen ? `${nameBase}.webm` : null;
+  const finalPath = sessionState.recordScreen
+    ? path.join(sessionState.meetingFolder, finalName)
+    : null;
 
-  if (fs.existsSync(sessionState.tempPath)) {
+  if (sessionState.tempPath && finalPath && fs.existsSync(sessionState.tempPath)) {
     try {
       await runFFmpegRemux(sessionState.tempPath, finalPath);
       fs.unlinkSync(sessionState.tempPath);
@@ -481,6 +494,7 @@ registerGuardedHandle('stop-meeting', async (_event, { meetingId, dbId, startTim
     meetingId,
     dbId,
     startTime: sessionState.startTime,
+    recordScreen: sessionState.recordScreen,
     endTime: sessionState.endTime,
     title: sessionState.title,
   };
@@ -607,7 +621,7 @@ registerGuardedHandle('auto-title-meeting', async (_event, { dbId }) => {
 
   const { generateGeminiJson } = await import('./ai/providers/gemini.js');
   const response = await generateGeminiJson({
-    model: AI_CONFIG.models.liveGujarati,
+    tier: 'fast',
     prompt: [
       'Generate a short, professional meeting title from this transcript excerpt.',
       'Return JSON only: {"title": "string"}',
@@ -718,7 +732,7 @@ async function autoGenerateTitle(dbId, transcriptEntries) {
 
   const { generateGeminiJson } = await import('./ai/providers/gemini.js');
   const response = await generateGeminiJson({
-    model: AI_CONFIG.models.liveGujarati,
+    tier: 'fast',
     prompt: [
       'Generate a short, professional meeting title from this transcript excerpt.',
       'Return JSON only: {"title": "string"}',

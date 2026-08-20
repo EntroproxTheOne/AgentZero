@@ -21,10 +21,12 @@ export async function answerQuickLookQuestion(session, { question, history }) {
     chatHistory: trimmedHistory,
   });
 
+  const tier = isComplexQuestion(question) ? 'big' : 'fast';
   const response = await generateGeminiJson({
-    model: AI_CONFIG.models.quickLook,
+    tier,
     prompt,
     maxOutputTokens: AI_CONFIG.quickLookMaxCompletionTokens,
+    useSearch: shouldUseGoogleSearch(question),
   });
 
   let quickLook;
@@ -49,7 +51,8 @@ export async function answerQuickLookQuestion(session, { question, history }) {
     debug: {
       ...current.debug,
       quickLook: [...current.debug.quickLook.slice(-19), {
-        model: AI_CONFIG.models.quickLook,
+        model: response.model,
+        usedSearch: response.usedSearch,
         updatedAt,
         latencyMs: response.latencyMs,
         estimatedInputTokens: contextMeta.estimatedTokens,
@@ -60,4 +63,13 @@ export async function answerQuickLookQuestion(session, { question, history }) {
   }));
 
   return quickLook;
+}
+
+function isComplexQuestion(question) {
+  return question.trim().length > 180
+    || /\b(analy[sz]e|compare|contrast|trade[- ]?off|strategy|detailed|step[- ]by[- ]step|why|how should)\b/i.test(question);
+}
+
+function shouldUseGoogleSearch(question) {
+  return /\b(current|latest|today|recent|news|price|cost|weather|who is|what is the date|look ?up|search|according to|this week|this month|202[4-9])\b/i.test(question);
 }

@@ -40,7 +40,7 @@ declare global {
       resetPassword: (data: { email: string; newPassword: string }) => Promise<{ success: boolean; error?: string }>;
       updateListenerName: (data: { userId: number; listenerName: string }) => Promise<{ success: boolean }>;
       getAppSettings: () => Promise<AppSettings>;
-      updateAppSettings: (data: { nativeIndiaMode: boolean }) => Promise<AppSettings>;
+      updateAppSettings: (data: { nativeIndiaMode?: boolean; screenRecordingEnabled?: boolean }) => Promise<AppSettings>;
       windowMinimize: () => void;
       windowMaximize: () => void;
       windowClose: () => void;

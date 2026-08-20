@@ -56,29 +56,64 @@ function extractGeminiText(response) {
   throw new Error('Gemini response did not include text');
 }
 
+function getModelCandidates({ tier, model, fallbackModels = [] }) {
+  const configuredModels = tier ? AI_CONFIG.modelChains[tier] : null;
+  const candidates = configuredModels?.length
+    ? configuredModels
+    : [model, ...fallbackModels];
+
+  return [...new Set(candidates.filter((candidate) => typeof candidate === 'string' && candidate.trim()))];
+}
+
+function formatFailure(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function generateGeminiJson({
+  tier = 'fast',
   model,
+  fallbackModels,
   prompt,
   maxOutputTokens,
+  useSearch = false,
 }) {
-  await geminiLimiter.waitForTurn();
+  const candidates = getModelCandidates({ tier, model, fallbackModels });
+  if (candidates.length === 0) {
+    throw new Error('No Gemini models are configured');
+  }
 
+  const searchModes = useSearch ? [true, false] : [false];
+  const failures = [];
   const client = getGeminiClient();
-  const startedAt = Date.now();
-  const response = await client.models.generateContent({
-    model,
-    contents: prompt,
-    config: {
-      temperature: 0.2,
-      topP: 0.95,
-      responseMimeType: 'application/json',
-      maxOutputTokens: maxOutputTokens ?? AI_CONFIG.highlightsMaxCompletionTokens,
-    },
-  });
 
-  return {
-    text: extractGeminiText(response),
-    latencyMs: Date.now() - startedAt,
-    raw: response,
-  };
+  for (const includeSearch of searchModes) {
+    for (const candidate of candidates) {
+      try {
+        await geminiLimiter.waitForTurn();
+        const startedAt = Date.now();
+        const response = await client.models.generateContent({
+          model: candidate,
+          contents: prompt,
+          config: {
+            responseMimeType: 'application/json',
+            maxOutputTokens: maxOutputTokens ?? AI_CONFIG.highlightsMaxCompletionTokens,
+            ...(includeSearch ? { tools: [{ googleSearch: {} }] } : {}),
+          },
+        });
+
+        return {
+          text: extractGeminiText(response),
+          latencyMs: Date.now() - startedAt,
+          raw: response,
+          model: candidate,
+          usedSearch: includeSearch,
+        };
+      } catch (error) {
+        failures.push(`${candidate}${includeSearch ? ' with Search' : ''}: ${formatFailure(error)}`);
+        console.warn(`[Gemini] Request failed for ${candidate}${includeSearch ? ' with Search' : ''}:`, error);
+      }
+    }
+  }
+
+  throw new Error(`Gemini request failed across all configured models. ${failures.join(' | ')}`);
 }
