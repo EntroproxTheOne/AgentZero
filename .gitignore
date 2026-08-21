@@ -10,6 +10,7 @@ lerna-debug.log*
 node_modules
 dist
 release
+release-search
 dist-ssr
 *.local
 

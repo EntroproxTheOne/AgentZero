@@ -1,9 +1,3 @@
-const SEARCH_TRIGGER_PATTERN = /\b(current|latest|today|recent|news|price|cost|weather|who\s+is|who\s+was|what\s+is|what\s+are|define|definition|meaning|explain|look\s*up|search|according\s+to|this\s+week|this\s+month|20\d{2})\b/i;
-
-export function shouldUseGoogleSearch(question) {
-  return typeof question === 'string' && SEARCH_TRIGGER_PATTERN.test(question);
-}
-
 export function wasGoogleSearchUsed(response) {
   const metadata = [
     response?.groundingMetadata,

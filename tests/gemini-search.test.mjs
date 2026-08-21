@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { test } from 'node:test';
-import { shouldUseGoogleSearch, wasGoogleSearchUsed } from '../electron/ai/searchGrounding.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { wasGoogleSearchUsed } from '../electron/ai/searchGrounding.js';
 
-test('enables Google Search for definition and identity questions', () => {
-  assert.equal(shouldUseGoogleSearch('What is an open source model?'), true);
-  assert.equal(shouldUseGoogleSearch('Who is Sachin?'), true);
-});
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const quickLookSource = fs.readFileSync(path.join(repoRoot, 'electron', 'ai', 'quickLook.js'), 'utf8');
 
-test('keeps a transcript-specific count question transcript-first', () => {
-  assert.equal(shouldUseGoogleSearch('How many people are in HPAIR?'), false);
+test('QuickLook always makes Google Search available to Gemini', () => {
+  assert.match(quickLookSource, /useSearch:\s*true/);
+  assert.doesNotMatch(quickLookSource, /shouldUseGoogleSearch/);
 });
 
 test('detects actual web grounding in a Gemini response', () => {

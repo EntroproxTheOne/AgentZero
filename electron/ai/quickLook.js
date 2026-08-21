@@ -2,7 +2,6 @@ import { AI_CONFIG, capTranscriptContext } from './config.js';
 import { buildQuickLookPrompt } from './prompts.js';
 import { extractLooseJsonStringField, parseJsonText, validateQuickLook } from './schemas.js';
 import { generateGeminiJson } from './providers/gemini.js';
-import { shouldUseGoogleSearch } from './searchGrounding.js';
 import { updateArtifactsFile } from './artifactStore.js';
 
 export async function answerQuickLookQuestion(session, { question, history }) {
@@ -27,7 +26,7 @@ export async function answerQuickLookQuestion(session, { question, history }) {
     tier,
     prompt,
     maxOutputTokens: AI_CONFIG.quickLookMaxCompletionTokens,
-    useSearch: shouldUseGoogleSearch(question),
+    useSearch: true,
   });
 
   let quickLook;
