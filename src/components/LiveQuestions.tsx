@@ -15,7 +15,8 @@ interface LiveQuestionsProps {
 
 /* ─── Component ─── */
 export default function LiveQuestions({ questions, onToggle }: LiveQuestionsProps) {
-  const visibleQuestions = questions.slice(0, 3);
+  // Backend keeps a capped running list; show all of it (the panel scrolls).
+  const visibleQuestions = questions;
 
   return (
     <div className="bento-panel bento-questions">

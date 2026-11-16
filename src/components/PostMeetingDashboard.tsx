@@ -1,14 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
+  Briefcase,
+  Building2,
   CheckSquare,
+  ChevronDown,
+  FolderOpen,
+  Loader2,
+  RotateCcw,
   Clock,
   Download,
   FileText,
+  IndianRupee,
   MessageSquare,
   Users,
 } from 'lucide-react';
-import type { MeetingArtifactsResponse } from '../types/meeting';
+import type { MeetingArtifactsResponse, MeetingCost, ProcessingState } from '../types/meeting';
+
+const cleanIpcError = (message: string) => message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+const formatInr = (value: number) => `₹${value < 10 ? value.toFixed(2) : value.toFixed(0)}`;
 
 interface ActionItem {
   id: number;
@@ -36,6 +46,30 @@ export default function PostMeetingDashboard({
   const [exportingFormat, setExportingFormat] = useState<'pdf' | 'markdown' | null>(null);
   const [exportStatus, setExportStatus] = useState('');
   const [displayTitle, setDisplayTitle] = useState(meetingTitle);
+  const [showCost, setShowCost] = useState(false);
+  const [processing, setProcessing] = useState<{ state: ProcessingState; note: string | null } | null>(null);
+  const [showTranscript, setShowTranscript] = useState(false);
+
+  // Post-meeting pipeline status (writing minutes, identifying speakers, ...).
+  useEffect(() => {
+    if (!window.electronAPI?.onMeetingProcessing) return undefined;
+    return window.electronAPI.onMeetingProcessing((event) => {
+      if (event.dbId !== meetingDbId) return;
+      setProcessing({ state: event.state, note: event.note });
+      if (event.state === 'done') void loadMeetingArtifacts(meetingDbId, setMeetingData, () => {}, setError);
+    });
+  }, [meetingDbId]);
+  const [cost, setCost] = useState<MeetingCost | null>(null);
+
+  useEffect(() => {
+    void window.electronAPI?.getAppSettings().then((settings) => setShowCost(settings.showCost)).catch(() => {});
+  }, []);
+
+  // Recompute whenever artifacts change: highlights/minutes add AI calls after the meeting ends.
+  useEffect(() => {
+    if (!showCost || !window.electronAPI) return;
+    void window.electronAPI.getMeetingCost({ dbId: meetingDbId }).then(setCost).catch(() => setCost(null));
+  }, [showCost, meetingDbId, meetingData]);
 
   // Listen for auto-generated title updates
   useEffect(() => {
@@ -56,20 +90,25 @@ export default function PostMeetingDashboard({
     void loadMeetingArtifacts(meetingDbId, setMeetingData, setLoading, setError);
   }, [meetingDbId]);
 
+  const startTimeMs = meetingData?.meeting?.start_time_ms ?? null;
   useEffect(() => {
-    if (!window.electronAPI?.onMeetingArtifactsUpdated || !meetingData?.artifacts?.meetingId) {
-      return undefined;
-    }
+    if (!window.electronAPI?.onMeetingArtifactsUpdated) return undefined;
 
     window.electronAPI.onMeetingArtifactsUpdated((event) => {
-      if (event.meetingId !== meetingData.artifacts?.meetingId) return;
-      void loadMeetingArtifacts(meetingDbId, setMeetingData, setLoading, setError);
+      const matches = (event as { dbId?: number }).dbId === meetingDbId || (startTimeMs !== null && event.meetingId === startTimeMs);
+      if (!matches) return;
+      // Quiet refresh: keep what is on screen while new results load.
+      void loadMeetingArtifacts(meetingDbId, setMeetingData, () => {}, setError);
     });
 
     return () => {
       window.electronAPI.offMeetingArtifactsUpdated?.();
     };
-  }, [meetingData?.artifacts?.meetingId, meetingDbId]);
+  }, [startTimeMs, meetingDbId]);
+
+  const processingState = processing?.state ?? meetingData?.meeting?.processing_state ?? 'done';
+  const processingNote = processing?.note ?? meetingData?.meeting?.processing_note ?? null;
+  const isProcessing = processingState === 'transcribing' || processingState === 'analyzing';
 
   const actionItems = useMemo<ActionItem[]>(
     () => (meetingData?.artifacts?.highlights?.actionItems ?? []).map((text, index) => ({
@@ -109,7 +148,8 @@ export default function PostMeetingDashboard({
     keyDiscussionPoints: [],
     actionItems: [],
   };
-  const isHighlightsLoading = loading || !highlights || highlights.status === 'loading' || highlights.status === 'idle';
+  const highlightsFailed = !loading && highlights?.status === 'error' && !isProcessing;
+  const isHighlightsLoading = !highlightsFailed && (loading || !highlights || highlights.status === 'loading' || highlights.status === 'idle');
 
   const toggleAction = (id: number) => {
     setCompletedActionIds((previous) => (
@@ -141,7 +181,7 @@ export default function PostMeetingDashboard({
       );
       await window.electronAPI.openInExplorer(result.filePath);
     } catch (caughtError) {
-      const message = caughtError instanceof Error ? caughtError.message : 'Export failed.';
+      const message = caughtError instanceof Error ? cleanIpcError(caughtError.message) : 'Export failed.';
       setExportStatus(message);
     } finally {
       setExportingFormat(null);
@@ -160,6 +200,29 @@ export default function PostMeetingDashboard({
         </button>
       </div>
 
+      {(meetingData?.meeting?.client_name || meetingData?.meeting?.project_name || meetingData?.meeting?.agenda) && (
+        <div className="pm-context">
+          {meetingData.meeting.client_name && <span className="meeting-chip"><Building2 size={12} /> {meetingData.meeting.client_name}</span>}
+          {meetingData.meeting.project_name && <span className="meeting-chip"><Briefcase size={12} /> {meetingData.meeting.project_name}</span>}
+          {meetingData.meeting.agenda && <span className="pm-context-agenda">{meetingData.meeting.agenda}</span>}
+        </div>
+      )}
+
+      {isProcessing && (
+        <div className="pm-processing" role="status">
+          <Loader2 size={16} className="spin" />
+          <span><strong>Finishing up.</strong> {processingNote || 'Working on this meeting.'} You can close the app; it continues next time.</span>
+        </div>
+      )}
+      {processingState === 'error' && (
+        <div className="pm-processing pm-processing-error" role="alert">
+          <span><strong>This meeting needs attention.</strong> {processingNote}</span>
+          <button className="setting-link-btn" onClick={() => { void window.electronAPI.retryMeetingProcessing({ dbId: meetingDbId }); setProcessing({ state: 'analyzing', note: 'Retrying' }); }}>
+            <RotateCcw size={14} /> Retry
+          </button>
+        </div>
+      )}
+
       <div className="pm-grid">
         <div className="pm-highlights bento-panel">
           <div className="bento-panel-header">
@@ -173,6 +236,8 @@ export default function PostMeetingDashboard({
               <p className="pm-summary-text">
                 {error
                   ? error
+                  : highlightsFailed
+                    ? `Highlights could not be generated: ${highlights.error ?? 'unknown error'}. Check Settings → AI & Transcription, then reopen this meeting.`
                   : isHighlightsLoading
                     ? 'Generating meeting highlights from the transcript...'
                     : highlights.summary}
@@ -259,6 +324,60 @@ export default function PostMeetingDashboard({
                 </div>
               </div>
             </div>
+          </div>
+
+          {showCost && cost && (
+            <div className="pm-cost bento-panel">
+              <div className="bento-panel-header">
+                <IndianRupee size={16} />
+                <span>Meeting Cost</span>
+                <span className="bento-badge">{cost.pricesVerified ? 'estimate' : 'rough estimate'}</span>
+              </div>
+              <div className="pm-cost-body">
+                <div className="pm-cost-total">
+                  {formatInr(cost.totalInr)}
+                  <span className="pm-cost-usd">≈ ${cost.totalUsd.toFixed(2)}</span>
+                </div>
+                <dl className="pm-cost-lines">
+                  <div><dt>Transcription (Sarvam, {Math.round(cost.audioMinutes)} min{cost.speakerDetection ? ', with speaker detection' : ''})</dt><dd>{formatInr(cost.sttInr)}</dd></div>
+                  <div><dt>AI analysis ({cost.aiCalls} calls)</dt><dd>{formatInr(cost.aiInr)}</dd></div>
+                  {cost.searchInr > 0 && <div><dt>Web search</dt><dd>{formatInr(cost.searchInr)}</dd></div>}
+                </dl>
+                <p className="pm-cost-note">
+                  List prices, excluding GST. {cost.pricesVerified ? '' : 'Gemini 3.5 Flash Mumbai price not yet confirmed. '}Hide this in Settings.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="pm-transcript bento-panel">
+            <button className="bento-panel-header pm-transcript-toggle" onClick={() => setShowTranscript((value) => !value)} aria-expanded={showTranscript}>
+              <MessageSquare size={16} />
+              <span>Transcript</span>
+              <span className="bento-badge">{metrics.transcriptLines} lines</span>
+              <ChevronDown size={14} className={showTranscript ? 'pm-chevron-open' : ''} />
+            </button>
+            {showTranscript && (
+              <div className="pm-transcript-body">
+                {(meetingData?.transcriptEntries ?? []).length === 0
+                  ? <p className="pm-summary-text">{isProcessing ? 'The transcript will appear here shortly.' : 'No transcript for this meeting.'}</p>
+                  : (meetingData?.transcriptEntries ?? []).map((entry, index) => (
+                    <p key={index} className="pm-transcript-line">
+                      <span className="pm-transcript-time">{entry.timestamp}</span>
+                      <span className="pm-transcript-speaker">{entry.speakerLabel}</span>
+                      <span>{entry.text}</span>
+                    </p>
+                  ))}
+              </div>
+            )}
+            {(meetingData?.meeting?.video_file_path || meetingData?.meeting?.audio_file_path) && (
+              <button
+                className="setting-link-btn pm-open-recording"
+                onClick={() => void window.electronAPI.openInExplorer((meetingData.meeting.video_file_path || meetingData.meeting.audio_file_path) as string)}
+              >
+                <FolderOpen size={14} /> Show recording file
+              </button>
+            )}
           </div>
 
           <div className="pm-export bento-panel">

@@ -9,7 +9,8 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
   const currentArtifacts = await readArtifactsFile(session.artifactsPath);
   const currentMinutes = currentArtifacts?.minutesOfMeeting;
 
-  if (!force && currentMinutes?.status === 'ready' && currentMinutes.content) {
+  // Fallback minutes (built from highlights after an AI failure) are retried next time.
+  if (!force && currentMinutes?.status === 'ready' && currentMinutes.content && currentMinutes.source !== 'fallback') {
     return currentMinutes;
   }
 
@@ -46,15 +47,19 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
       tier: 'big',
       prompt,
       maxOutputTokens: AI_CONFIG.minutesOfMeetingMaxCompletionTokens,
+      usageFile: session.artifactsPath,
+      purpose: 'minutes',
+      context: session.contextText ?? '',
     });
 
-    const content = await parseMinutesOfMeetingContent(response.text);
+    const content = await parseMinutesOfMeetingContent(response.text, session.artifactsPath);
     const updatedAt = new Date().toISOString();
 
     const updatedArtifacts = await updateArtifactsFile(session.artifactsPath, (current) => ({
       ...current,
       minutesOfMeeting: {
         status: 'ready',
+        source: 'ai',
         updatedAt,
         error: null,
         content,
@@ -87,8 +92,9 @@ export async function ensureMinutesOfMeeting(session, { force = false } = {}) {
         ...current,
         minutesOfMeeting: {
           status: 'ready',
+          source: 'fallback',
           updatedAt,
-          error: null,
+          error: errorMessage,
           content: fallbackContent,
         },
         debug: {
@@ -170,7 +176,7 @@ function deriveFollowUps(actionItems) {
     .map((item) => `Follow up on: ${item.trim()}`);
 }
 
-async function parseMinutesOfMeetingContent(rawText) {
+async function parseMinutesOfMeetingContent(rawText, usageFile) {
   try {
     return validateMinutesOfMeeting(parseJsonText(rawText));
   } catch {
@@ -220,7 +226,9 @@ ${truncatedRaw}
       const repairedResponse = await generateGeminiJson({
         tier: 'big',
         prompt: repairPrompt,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192,
+        usageFile,
+        purpose: 'minutes-repair',
       });
 
       return validateMinutesOfMeeting(parseJsonText(repairedResponse.text));
@@ -268,7 +276,9 @@ ${truncatedRaw}
       const rebuiltResponse = await generateGeminiJson({
         tier: 'big',
         prompt: rebuildPrompt,
-        maxOutputTokens: 4096,
+        maxOutputTokens: 8192,
+        usageFile,
+        purpose: 'minutes-repair',
       });
 
       return validateMinutesOfMeeting(parseJsonText(rebuiltResponse.text));
@@ -288,7 +298,7 @@ function buildMeetingMeta(session) {
   ).size;
 
   return {
-    dateLabel: session.startTime ? new Date(session.startTime).toLocaleString('en-US', {
+    dateLabel: session.startTime ? new Date(session.startTime).toLocaleString('en-IN', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',

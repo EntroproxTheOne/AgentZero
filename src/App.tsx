@@ -1,5 +1,5 @@
-import { useRef, useState } from 'react';
-import { History, LayoutDashboard, Settings, Square } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Building2, History, LayoutDashboard, MessagesSquare, Settings, Square, Upload } from 'lucide-react';
 import BentoGrid from './components/BentoGrid';
 import LoginPage from './components/LoginPage';
 import MeetingRecorder from './components/MeetingRecorder';
@@ -7,31 +7,48 @@ import PastMeetings from './components/PastMeetings';
 import PostMeetingDashboard from './components/PostMeetingDashboard';
 import SettingsPage from './components/SettingsPage';
 import TitleBar from './components/TitleBar';
-import type { CurrentMeetingInfo } from './types/meeting';
+import FirstRunSetup from './components/FirstRunSetup';
+import Walkthrough from './components/Walkthrough';
+import ClientsPage from './components/ClientsPage';
+import AskPage from './components/AskPage';
+import UploadRecordingDialog from './components/UploadRecordingDialog';
+import MacPermissions from './components/MacPermissions';
+import CaptureBar from './components/CaptureBar';
+import type { CaptureControls, CaptureState } from './components/capture';
+import type { AppUser, CurrentMeetingInfo } from './types/meeting';
 
-type Tab = 'dashboard' | 'past-meetings' | 'settings';
-
-interface UserData {
-  id: number;
-  username: string;
-  email: string;
-  listener_name: string;
-}
+type Tab = 'dashboard' | 'past-meetings' | 'clients' | 'ask' | 'settings';
 
 function App() {
-  const [user, setUser] = useState<UserData | null>(null);
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null);
+  const [showWalkthrough, setShowWalkthrough] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>('dashboard');
   const [isRecording, setIsRecording] = useState(false);
   const [showPostMeeting, setShowPostMeeting] = useState(false);
   const [currentMeeting, setCurrentMeeting] = useState<CurrentMeetingInfo | null>(null);
   const [lastMeeting, setLastMeeting] = useState<CurrentMeetingInfo | null>(null);
+  const [discardNotice, setDiscardNotice] = useState<string | null>(null);
+  const [captureState, setCaptureState] = useState<CaptureState>({ microphone: false, computerSound: false, screenVideo: false, problem: null });
+  const [captureControls, setCaptureControls] = useState<CaptureControls | null>(null);
+  const [stopError, setStopError] = useState<string | null>(null);
+  const [sttStatus, setSttStatus] = useState<{ state: 'live' | 'reconnecting' | 'lost'; detail: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!window.electronAPI?.onTranscriptionStatus) return undefined;
+    return window.electronAPI.onTranscriptionStatus(({ state, detail }) => setSttStatus({ state, detail }));
+  }, []);
   const [reviewMeeting, setReviewMeeting] = useState<{ dbId: number; title: string } | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
+  const [meetingsRefreshKey, setMeetingsRefreshKey] = useState(0);
   const stopFnRef = useRef<(() => Promise<void>) | null>(null);
   const recordingStartTimeRef = useRef<number>(0);
 
   const navItems: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
-    { id: 'past-meetings', label: 'Past Meetings', icon: <History size={18} /> },
+    { id: 'past-meetings', label: 'Meetings', icon: <History size={18} /> },
+    { id: 'clients', label: 'Clients', icon: <Building2 size={18} /> },
+    { id: 'ask', label: 'Ask', icon: <MessagesSquare size={18} /> },
     { id: 'settings', label: 'Settings', icon: <Settings size={18} /> },
   ];
 
@@ -40,12 +57,25 @@ function App() {
     stopFn: () => Promise<void>,
     _title: string,
     meetingInfo: CurrentMeetingInfo,
+    controls: CaptureControls,
   ) => {
+    setCaptureControls(controls);
+    setStopError(null);
+    setSttStatus(null);
     setCurrentMeeting(meetingInfo);
     setIsRecording(true);
     setShowPostMeeting(false);
+    setDiscardNotice(null);
     stopFnRef.current = stopFn;
     recordingStartTimeRef.current = meetingInfo.startTime;
+  };
+
+  const handleRecordingDiscarded = (reason: string) => {
+    setIsRecording(false);
+    setCurrentMeeting(null);
+    setShowPostMeeting(false);
+    stopFnRef.current = null;
+    setDiscardNotice(reason);
   };
 
   const handleRecordingStopped = (meetingInfo: CurrentMeetingInfo) => {
@@ -53,7 +83,20 @@ function App() {
     setCurrentMeeting(null);
     setLastMeeting(meetingInfo);
     setShowPostMeeting(true);
+    setMeetingsRefreshKey((value) => value + 1);
     stopFnRef.current = null;
+  };
+
+  const goToTab = (tab: Tab) => {
+    setActiveTab(tab);
+    if (tab === 'past-meetings') setMeetingsRefreshKey((value) => value + 1);
+  };
+
+  const handleUploaded = (dbId: number, title: string) => {
+    setShowUpload(false);
+    setMeetingsRefreshKey((value) => value + 1);
+    setReviewMeeting({ dbId, title });
+    setActiveTab('dashboard');
   };
 
   const handleStopClick = async () => {
@@ -62,14 +105,20 @@ function App() {
     }
 
     if (stopFnRef.current) {
-      await stopFnRef.current();
+      setStopError(null);
+      try {
+        await stopFnRef.current();
+      } catch (error) {
+        const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error);
+        setStopError(`Could not stop cleanly: ${message}. Press Stop Recording again to retry.`);
+      }
     }
   };
 
   const handleNewMeeting = () => {
     if (reviewMeeting) {
       setReviewMeeting(null);
-      setActiveTab('past-meetings');
+      goToTab('past-meetings');
       return;
     }
     setShowPostMeeting(false);
@@ -81,11 +130,50 @@ function App() {
     setActiveTab('dashboard');
   };
 
+  useEffect(() => {
+    void window.electronAPI?.needsFirstRunSetup().then(setNeedsSetup).catch(() => setNeedsSetup(false));
+  }, []);
+
+  const handleSignedIn = (signedIn: AppUser) => {
+    setNeedsSetup(false);
+    setUser(signedIn);
+    void window.electronAPI.getAppSettings()
+      .then((settings) => setShowWalkthrough(!settings.onboardingDone))
+      .catch(() => {});
+  };
+
+  const handleSignOut = async () => {
+    // Never leave a recording running behind the sign-in screen.
+    if (isRecording && stopFnRef.current) {
+      await stopFnRef.current();
+    }
+    try {
+      await window.electronAPI?.logout();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error));
+      return;
+    }
+    setUser(null);
+    setCurrentMeeting(null);
+    setIsRecording(false);
+    setShowPostMeeting(false);
+    setReviewMeeting(null);
+    setShowWalkthrough(false);
+    setActiveTab('dashboard');
+  };
+
+  const finishWalkthrough = () => {
+    setShowWalkthrough(false);
+    void window.electronAPI?.updateAppSettings({ onboardingDone: true });
+  };
+
   if (!user) {
     return (
       <div className="app-root">
         <TitleBar />
-        <LoginPage onLogin={setUser} />
+        {needsSetup === null ? null : needsSetup
+          ? <FirstRunSetup onComplete={handleSignedIn} />
+          : <LoginPage onLogin={handleSignedIn} />}
       </div>
     );
   }
@@ -107,6 +195,12 @@ function App() {
               Stop Recording
             </button>
           </header>
+          <CaptureBar state={captureState} controls={captureControls} transcriptStatus={sttStatus} />
+          {stopError && (
+            <div className="detected-banner detected-banner-warn" role="alert">
+              <span>{stopError}</span>
+            </div>
+          )}
           <BentoGrid
             key={currentMeeting.meetingId}
             meetingId={currentMeeting.meetingId}
@@ -145,10 +239,25 @@ function App() {
           <h2 className="page-label">Current Meeting</h2>
           <h3 className="page-title">Ready to record</h3>
         </header>
+        {discardNotice && (
+          <div className="detected-banner detected-banner-warn discard-notice" role="status">
+            <span>{discardNotice}</span>
+            <button type="button" className="modal-close" onClick={() => setDiscardNotice(null)} aria-label="Dismiss">×</button>
+          </div>
+        )}
         <MeetingRecorder
           onRecordingStarted={handleRecordingStarted}
           onRecordingStopped={handleRecordingStopped}
+          onRecordingDiscarded={handleRecordingDiscarded}
+          onCaptureChange={setCaptureState}
         />
+        <button className="dashboard-upload" onClick={() => setShowUpload(true)}>
+          <Upload size={18} />
+          <span>
+            <strong>Already recorded a call?</strong>
+            <em>Upload audio or video and get the transcript, highlights and minutes.</em>
+          </span>
+        </button>
       </>
     );
   };
@@ -171,7 +280,7 @@ function App() {
               <button
                 key={item.id}
                 className={`sidebar-btn ${activeTab === item.id ? 'sidebar-btn-active' : ''}`}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => goToTab(item.id)}
               >
                 {item.icon}
                 {item.label}
@@ -183,12 +292,13 @@ function App() {
           </nav>
 
           <div className="sidebar-footer">
-            <button className="sidebar-logout" onClick={() => setUser(null)}>Sign out</button>
+            <button className="sidebar-logout" onClick={() => void handleSignOut()}>Sign out</button>
             <div className="sidebar-version">v0.1.0</div>
           </div>
         </div>
 
         <main className="main-content">
+          <MacPermissions variant="banner" />
           <section
             className="tab-panel"
             style={{ display: activeTab === 'dashboard' ? 'flex' : 'none' }}
@@ -201,17 +311,43 @@ function App() {
             style={{ display: activeTab === 'past-meetings' ? 'flex' : 'none' }}
             aria-hidden={activeTab !== 'past-meetings'}
           >
-            <PastMeetings onOpenMeeting={handleOpenPastMeeting} />
+            <PastMeetings
+              onOpenMeeting={handleOpenPastMeeting}
+              onUpload={() => setShowUpload(true)}
+              refreshKey={meetingsRefreshKey}
+            />
+          </section>
+          <section
+            className="tab-panel"
+            style={{ display: activeTab === 'clients' ? 'flex' : 'none' }}
+            aria-hidden={activeTab !== 'clients'}
+          >
+            {activeTab === 'clients' && <ClientsPage />}
+          </section>
+          <section
+            className="tab-panel"
+            style={{ display: activeTab === 'ask' ? 'flex' : 'none' }}
+            aria-hidden={activeTab !== 'ask'}
+          >
+            <AskPage onOpenMeeting={handleOpenPastMeeting} />
           </section>
           <section
             className="tab-panel"
             style={{ display: activeTab === 'settings' ? 'flex' : 'none' }}
             aria-hidden={activeTab !== 'settings'}
           >
-            <SettingsPage user={user} />
+            <SettingsPage
+              key={user.id}
+              user={user}
+              onUserUpdated={setUser}
+              onSignedOut={handleSignOut}
+              onShowWalkthrough={() => setShowWalkthrough(true)}
+            />
           </section>
         </main>
       </div>
+      {showWalkthrough && <Walkthrough user={user} onDone={finishWalkthrough} />}
+      {showUpload && <UploadRecordingDialog onClose={() => setShowUpload(false)} onUploaded={handleUploaded} />}
     </div>
   );
 }

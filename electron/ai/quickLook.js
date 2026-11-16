@@ -4,7 +4,8 @@ import { extractLooseJsonStringField, parseJsonText, validateQuickLook } from '.
 import { generateGeminiJson } from './providers/gemini.js';
 import { updateArtifactsFile } from './artifactStore.js';
 
-export async function answerQuickLookQuestion(session, { question, history }) {
+export async function answerQuickLookQuestion(session, { question, history, webSearch = false }) {
+  if (webSearch) return answerFromWeb(session, question);
   const transcriptLines = session.transcriptEntries.map((entry) => `${entry.speakerLabel}: ${entry.text}`);
   const contextMeta = capTranscriptContext(transcriptLines, {
     reservedTokens: 3000,
@@ -26,7 +27,10 @@ export async function answerQuickLookQuestion(session, { question, history }) {
     tier,
     prompt,
     maxOutputTokens: AI_CONFIG.quickLookMaxCompletionTokens,
-    useSearch: true,
+    useSearch: false,
+    usageFile: session?.artifactsPath ?? null,
+    purpose: 'quicklook',
+    context: session?.contextText ?? '',
   });
 
   let quickLook;
@@ -71,4 +75,34 @@ export async function answerQuickLookQuestion(session, { question, history }) {
 function isComplexQuestion(question) {
   return question.trim().length > 180
     || /\b(analy[sz]e|compare|contrast|trade[- ]?off|strategy|detailed|step[- ]by[- ]step|why|how should)\b/i.test(question);
+}
+
+/**
+ * Web mode: only the question itself is sent, with Google Search grounding.
+ * No transcript, chat history, client or project data, since Search runs
+ * outside the Mumbai region.
+ */
+async function answerFromWeb(session, question) {
+  const prompt = [
+    'Answer the question below using Google Search for current, factual information.',
+    'Be concise (at most 5 sentences) and name your sources in plain words.',
+    'Respond as JSON: {"answer": "..."}',
+    '',
+    `Question: ${question}`,
+  ].join('\n');
+  const response = await generateGeminiJson({
+    tier: 'fast',
+    prompt,
+    maxOutputTokens: AI_CONFIG.quickLookMaxCompletionTokens,
+    useSearch: true,
+    usageFile: session?.artifactsPath ?? null,
+    purpose: 'quicklook-web',
+  });
+  let answer;
+  try {
+    answer = validateQuickLook(parseJsonText(response.text)).answer;
+  } catch {
+    answer = extractLooseJsonStringField(response.text, 'answer') || response.text.trim();
+  }
+  return { answer, usedSearch: response.usedSearch };
 }

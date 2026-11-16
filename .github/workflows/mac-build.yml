@@ -1,0 +1,64 @@
+name: Mac build (unsigned DMG)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [mac-pilot]
+
+jobs:
+  build-mac:
+    runs-on: macos-15 # Apple Silicon runner -> arm64 DMG
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Tests check the built renderer (dist/pcm-processor.js), so build first.
+      - name: Build renderer
+        run: npx tsc -b && npx vite build
+
+      - name: Test
+        run: npm test
+
+      - name: Write built-in keys (Advent build)
+        env:
+          GCP_PROJECT_ID: ${{ secrets.ADVENT_GCP_PROJECT_ID }}
+          GEMINI_API_KEY: ${{ secrets.ADVENT_GEMINI_API_KEY }}
+          SARVAM_API_KEY: ${{ secrets.ADVENT_SARVAM_API_KEY }}
+        run: |
+          node -e "
+            const missing = ['GCP_PROJECT_ID', 'GEMINI_API_KEY', 'SARVAM_API_KEY'].filter((k) => !process.env[k]);
+            if (missing.length) { console.error('Missing GitHub secrets: ADVENT_' + missing.join(', ADVENT_')); process.exit(1); }
+            require('fs').writeFileSync('provisioning/provisioned.json', JSON.stringify({
+              gcpProjectId: process.env.GCP_PROJECT_ID,
+              geminiApiKey: process.env.GEMINI_API_KEY,
+              sarvamApiKey: process.env.SARVAM_API_KEY,
+            }));
+            console.log('Built-in keys written');
+          "
+
+      - name: Build DMG
+        env:
+          # Unsigned build: no Apple Developer certificate yet.
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npm run build:mac -- --publish never
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentZero-mac-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+          retention-days: 14
+
+      - name: Remove built-in keys from the runner
+        if: always()
+        run: rm -f provisioning/provisioned.json

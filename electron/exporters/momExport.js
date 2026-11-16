@@ -1,8 +1,13 @@
 import path from 'path';
+import os from 'os';
 import fs from 'fs/promises';
 import { BrowserWindow } from 'electron';
+
+// Organisation shown on exported minutes.
+export const MOM_ORGANIZATION = 'Advent Financial';
 import { ensureMinutesOfMeeting } from '../ai/minutesOfMeeting.js';
 import { readArtifactsFile } from '../ai/artifactStore.js';
+import { getMeetingContextForRow } from '../workspace.js';
 import { normalizeText, normalizeTranscriptEntries } from '../text/normalize.js';
 
 export async function exportMeetingMom({
@@ -17,6 +22,7 @@ export async function exportMeetingMom({
     endTime: meeting.end_time_ms,
     transcriptEntries: normalizedTranscriptEntries,
     artifactsPath: meeting.artifacts_path,
+    contextText: getMeetingContextForRow(meeting).text,
   };
 
   let minutes;
@@ -97,6 +103,8 @@ function renderMomMarkdown({ meeting, transcriptEntries, content }) {
   const lines = [];
   lines.push(`# ${content.title}`);
   lines.push('');
+  lines.push(`_${MOM_ORGANIZATION} · Minutes of Meeting · Confidential_`);
+  lines.push('');
   lines.push(`- Date: ${formatMeetingDate(meeting.date)}`);
   lines.push(`- Duration: ${formatDuration(meeting.start_time_ms, meeting.end_time_ms)}`);
   lines.push(`- Speakers: ${countSpeakers(transcriptEntries)}`);
@@ -124,6 +132,8 @@ function renderMomMarkdown({ meeting, transcriptEntries, content }) {
   lines.push('');
   appendBulletSection(lines, 'Risks and Blockers', content.risksAndBlockers);
   appendBulletSection(lines, 'Follow-Ups', content.followUps);
+  lines.push('---');
+  lines.push(`Prepared for ${MOM_ORGANIZATION}. Confidential.`);
   return lines.join('\n').trimEnd();
 }
 
@@ -150,13 +160,18 @@ function renderMomHtml({ meeting, transcriptEntries, content }) {
     <meta charset="utf-8" />
     <title>${escapeHtml(content.title)}</title>
     <style>
-      body { font-family: "Segoe UI", Arial, sans-serif; margin: 38px 42px; color: #1f2937; }
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", "Noto Sans Devanagari", "Noto Sans Gujarati", sans-serif; margin: 0; color: #1f2937; }
+      .brand { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: #6b7280; margin: 0 0 14px; }
       h1 { font-size: 28px; margin: 0 0 6px; color: #111827; }
       h2 { font-size: 16px; margin: 24px 0 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #6b7280; }
       p { font-size: 12px; line-height: 1.7; margin: 0 0 10px; }
       ul { margin: 0; padding-left: 18px; }
       li { font-size: 12px; line-height: 1.6; margin-bottom: 6px; }
       .meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 18px 0 24px; }
+      thead { display: table-header-group; }
+      tr { page-break-inside: avoid; }
+      h2 { page-break-after: avoid; }
+      li, td, p { overflow-wrap: anywhere; }
       .meta-card { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px 14px; background: #f9fafb; }
       .meta-label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #6b7280; margin-bottom: 4px; }
       .meta-value { display: block; font-size: 14px; font-weight: 700; color: #111827; }
@@ -168,8 +183,8 @@ function renderMomHtml({ meeting, transcriptEntries, content }) {
     </style>
   </head>
   <body>
+    <p class="brand">${escapeHtml(MOM_ORGANIZATION)} · Minutes of Meeting</p>
     <h1>${escapeHtml(content.title)}</h1>
-    <p>Prepared by AgentZero as a Minutes of Meeting summary.</p>
 
     <div class="meta">
       <div class="meta-card"><span class="meta-label">Date</span><span class="meta-value">${escapeHtml(formatMeetingDate(meeting.date))}</span></div>
@@ -226,24 +241,37 @@ async function writePdfFromHtml(html, outputPath) {
   const printWindow = new BrowserWindow({
     show: false,
     webPreferences: {
-      sandbox: false,
+      sandbox: true,
+      javascript: false,
     },
   });
 
+  // A temp file instead of a data: URL: long minutes exceed Chromium's URL limit.
+  const tempHtml = path.join(os.tmpdir(), `agentzero-mom-${process.pid}-${Date.now()}.html`);
   try {
-    await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    await fs.writeFile(tempHtml, html, 'utf8');
+    await printWindow.loadFile(tempHtml);
     const pdfBuffer = await printWindow.webContents.printToPDF({
       printBackground: true,
       pageSize: 'A4',
-      margins: {
-        top: 0.4,
-        bottom: 0.4,
-        left: 0.35,
-        right: 0.35,
-      },
+      margins: { top: 0.55, bottom: 0.7, left: 0.6, right: 0.6 },
+      displayHeaderFooter: true,
+      headerTemplate: '<span></span>',
+      footerTemplate: `<div style="width:100%;font-size:8px;color:#6b7280;padding:0 0.6in;display:flex;justify-content:space-between;font-family:-apple-system,'Segoe UI',Arial,sans-serif;">
+        <span>${escapeHtml(MOM_ORGANIZATION)} · Confidential</span>
+        <span>Page <span class="pageNumber"></span> of <span class="totalPages"></span></span>
+      </div>`,
     });
-    await fs.writeFile(outputPath, pdfBuffer);
+    try {
+      await fs.writeFile(outputPath, pdfBuffer);
+    } catch (error) {
+      if (error?.code === 'EBUSY' || error?.code === 'EPERM') {
+        throw new Error('The PDF is open in another app. Close it and export again.');
+      }
+      throw error;
+    }
   } finally {
+    await fs.rm(tempHtml, { force: true });
     if (!printWindow.isDestroyed()) {
       printWindow.close();
     }
@@ -263,7 +291,7 @@ function appendBulletSection(lines, heading, items) {
 
 function formatMeetingDate(dateValue) {
   if (!dateValue) return 'Unknown';
-  return new Date(dateValue).toLocaleString('en-US', {
+  return new Date(dateValue).toLocaleString('en-IN', {
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -287,8 +315,10 @@ function countSpeakers(transcriptEntries) {
 }
 
 function buildSafeBaseName(title) {
+  // Keep letters in any script (Hindi/Gujarati titles used to collapse to "Meeting").
   return String(title || 'Meeting')
-    .replace(/[^a-zA-Z0-9-_ ]/g, '')
+    .replace(/[^\p{L}\p{N}\p{M}\-_ ]/gu, '')
+    .slice(0, 80)
     .trim()
     .replace(/\s+/g, '-')
     || 'Meeting';

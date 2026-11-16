@@ -35,6 +35,9 @@ export async function generateMeetingHighlights(session) {
       tier: 'big',
       prompt,
       maxOutputTokens: AI_CONFIG.highlightsMaxCompletionTokens,
+      usageFile: session.artifactsPath,
+      purpose: 'highlights',
+      context: session.contextText ?? '',
     });
 
     const highlights = validateHighlights(parseJsonText(response.text));

@@ -1,16 +1,12 @@
 import fs from 'fs/promises';
-import { getDB, getAppSettings } from './db.js';
-import { createDeepgramSession } from './transcription/providers/deepgramProvider.js';
+import { getDB } from './db.js';
 import { createSarvamSession } from './transcription/providers/sarvamProvider.js';
 
 const sessions = new Map();
 
+// Sarvam (India-hosted) is the only transcription provider in this build.
 function getProviderFactory() {
-  const settings = getAppSettings();
-  if (settings.transcriptionProvider === 'sarvam') {
-    return createSarvamSession;
-  }
-  return createDeepgramSession;
+  return createSarvamSession;
 }
 
 export async function startTranscription(meetingId, { mainWindow, onFinalEntry }) {
@@ -42,7 +38,7 @@ export function getTranscriptEntries(meetingId) {
 export async function stopTranscription(meetingId, { dbId, transcriptPath }) {
   const session = sessions.get(meetingId);
   if (!session) {
-    return { transcriptPath: null, entries: [] };
+    return { transcriptPath: null, entries: [], stt: null, healthy: false, incomplete: true };
   }
 
   const entries = await session.stop();
@@ -64,5 +60,16 @@ export async function stopTranscription(meetingId, { dbId, transcriptPath }) {
   return {
     transcriptPath,
     entries,
+    // Live STT connected and reported no errors: an empty transcript then really means silence.
+    healthy: Boolean(!session.lastError && !session.incomplete && (session.billedAudioSeconds ?? 0) > 0),
+    // Some audio never reached Sarvam (dropped connection): rebuild from the recording.
+    incomplete: Boolean(session.incomplete),
+    stt: {
+      provider: session.provider,
+      model: session.model ?? null,
+      billedAudioSeconds: session.billedAudioSeconds ?? null,
+      incomplete: Boolean(session.incomplete),
+      reconnects: session.reconnects ?? 0,
+    },
   };
 }

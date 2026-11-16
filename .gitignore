@@ -27,3 +27,4 @@ dist-ssr
 
 .env
 /test_audio
+/provisioning/provisioned.json

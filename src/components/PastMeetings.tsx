@@ -1,23 +1,31 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Briefcase,
+  Building2,
   Calendar,
   Check,
   Clock,
   Edit3,
   Eye,
   FolderOpen,
+  Loader2,
+  RotateCcw,
   Search,
   Sparkles,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 import type { MeetingRecord } from '../types/meeting';
 
 interface PastMeetingsProps {
   onOpenMeeting?: (dbId: number, title: string) => void;
+  onUpload?: () => void;
+  /** Bumped by the shell whenever this tab is shown or a meeting is added. */
+  refreshKey?: number;
 }
 
-export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
+export default function PastMeetings({ onOpenMeeting, onUpload, refreshKey = 0 }: PastMeetingsProps) {
   const [meetings, setMeetings] = useState<MeetingRecord[]>([]);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
@@ -30,12 +38,29 @@ export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
 
   useEffect(() => {
     void loadMeetings(setMeetings, setLoading);
+  }, [refreshKey]);
+
+  // Live processing updates (transcribing an upload, writing minutes, ...).
+  useEffect(() => {
+    if (!window.electronAPI?.onMeetingProcessing) return undefined;
+    return window.electronAPI.onMeetingProcessing(({ dbId, state, note }) => {
+      setMeetings((prev) => prev.map((m) => (m.id === dbId ? { ...m, processing_state: state, processing_note: note } : m)));
+      if (state === 'done') void loadMeetings(setMeetings, () => {});
+    });
   }, []);
 
-  const filteredMeetings = useMemo(
-    () => meetings.filter((m) => m.title.toLowerCase().includes(search.toLowerCase())),
-    [meetings, search],
-  );
+  const filteredMeetings = useMemo(() => {
+    const query = search.toLowerCase().trim();
+    if (!query) return meetings;
+    return meetings.filter((m) => [m.title, m.client_name, m.project_name, m.agenda]
+      .some((value) => value?.toLowerCase().includes(query)));
+  }, [meetings, search]);
+
+  const handleRetry = (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    void window.electronAPI?.retryMeetingProcessing({ dbId: id });
+    setMeetings((prev) => prev.map((m) => (m.id === id ? { ...m, processing_state: 'analyzing', processing_note: 'Retrying' } : m)));
+  };
 
   const isAllSelected = filteredMeetings.length > 0 && filteredMeetings.every((m) => selectedIds.has(m.id));
   const hasSelection = selectedIds.size > 0;
@@ -141,9 +166,16 @@ export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
 
   return (
     <div className="page-container">
-      <header className="page-header">
-        <h2 className="page-label">Library</h2>
-        <h3 className="page-title">Past Meetings</h3>
+      <header className="page-header page-header-row">
+        <div>
+          <h2 className="page-label">Library</h2>
+          <h3 className="page-title">Meetings</h3>
+        </div>
+        {onUpload && (
+          <button className="setting-save-btn" onClick={onUpload}>
+            <Upload size={14} /> Upload a recording
+          </button>
+        )}
       </header>
 
       {/* Toolbar */}
@@ -152,7 +184,7 @@ export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
           <Search size={16} className="search-icon" />
           <input
             type="text"
-            placeholder="Search meetings..."
+            placeholder="Search by title, client, project or agenda"
             className="search-input"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -200,7 +232,7 @@ export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
           </h4>
           <p className="empty-state-text">
             {meetings.length === 0
-              ? 'Recorded meetings will appear here. Start by recording your first meeting from the Dashboard.'
+              ? 'Record a meeting from the Dashboard, or upload an earlier call recording (audio or video).'
               : 'Try a different search term.'}
           </p>
         </div>
@@ -272,6 +304,25 @@ export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
                     <span className="meeting-card-meta-item">
                       <Clock size={13} /> {formatTime(meeting.date)}
                     </span>
+                    {meeting.client_name && (
+                      <span className="meeting-chip"><Building2 size={12} /> {meeting.client_name}</span>
+                    )}
+                    {meeting.project_name && (
+                      <span className="meeting-chip"><Briefcase size={12} /> {meeting.project_name}</span>
+                    )}
+                    {meeting.source === 'upload' && <span className="meeting-chip meeting-chip-muted"><Upload size={12} /> Uploaded</span>}
+                    {meeting.processing_state && meeting.processing_state !== 'done' && meeting.processing_state !== 'recording' && (
+                      meeting.processing_state === 'error' ? (
+                        <span className="meeting-chip meeting-chip-error" title={meeting.processing_note ?? ''}>
+                          Needs attention
+                          <button className="mc-inline-btn" onClick={(e) => handleRetry(e, meeting.id)}><RotateCcw size={12} /> Retry</button>
+                        </span>
+                      ) : (
+                        <span className="meeting-chip meeting-chip-busy" title={meeting.processing_note ?? ''}>
+                          <Loader2 size={12} className="spin" /> {meeting.processing_note || 'Finishing up'}
+                        </span>
+                      )
+                    )}
                   </div>
                 </div>
 
@@ -280,7 +331,7 @@ export default function PastMeetings({ onOpenMeeting }: PastMeetingsProps) {
                   <button className="meeting-card-btn meeting-card-btn-view" onClick={(e) => { e.stopPropagation(); handleCardClick(meeting); }} title="View dashboard">
                     <Eye size={14} /> View
                   </button>
-                  <button className="meeting-card-btn meeting-card-btn-folder" onClick={(e) => handleOpenFolder(e, meeting.video_file_path || meeting.transcript_path)} title="Open folder">
+                  <button className="meeting-card-btn meeting-card-btn-folder" onClick={(e) => handleOpenFolder(e, meeting.video_file_path || meeting.audio_file_path || meeting.transcript_path)} title="Open folder">
                     <FolderOpen size={14} />
                   </button>
                   <button className="meeting-card-btn meeting-card-btn-delete" onClick={(e) => void handleDeleteSingle(e, meeting.id)} title="Delete">
@@ -312,9 +363,9 @@ async function loadMeetings(
 }
 
 function formatDate(dateStr: string) {
-  return new Date(dateStr).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  return new Date(dateStr).toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function formatTime(dateStr: string) {
-  return new Date(dateStr).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  return new Date(dateStr).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 }

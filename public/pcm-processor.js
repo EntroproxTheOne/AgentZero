@@ -17,20 +17,26 @@ class PCMProcessor extends AudioWorkletProcessor {
   }
 
   process(inputs) {
-    const micFrame = inputs[0]?.[0];
-
-    if (!micFrame) {
+    // Down-mix every channel to mono: computer sound is often stereo, and a voice
+    // panned to one side must not be lost.
+    const channels = inputs[0];
+    if (!channels || channels.length === 0 || !channels[0]) {
       return true;
     }
 
-    const frameLength = micFrame.length;
+    const channelCount = channels.length;
+    const frameLength = channels[0].length;
 
     for (let index = 0; index < frameLength; index += 1) {
       if (this.sampleCount >= BATCH_SAMPLES) {
         this.flush();
       }
 
-      this.micAccum[this.sampleCount] = micFrame ? micFrame[index] : 0;
+      let sum = 0;
+      for (let channel = 0; channel < channelCount; channel += 1) {
+        sum += channels[channel][index];
+      }
+      this.micAccum[this.sampleCount] = sum / channelCount;
       this.sampleCount += 1;
     }
 
@@ -48,7 +54,6 @@ class PCMProcessor extends AudioWorkletProcessor {
     this.port.postMessage({ type: 'audio-chunk', buffer }, [buffer]);
 
     this.micAccum = new Float32Array(BATCH_SAMPLES);
-    this.meetingAccum = new Float32Array(BATCH_SAMPLES);
     this.sampleCount = 0;
   }
 

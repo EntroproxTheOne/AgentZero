@@ -3,6 +3,7 @@ import { buildLiveInsightsPrompt } from './prompts.js';
 import { parseJsonText, validateLiveInsights } from './schemas.js';
 import { generateGeminiJson } from './providers/gemini.js';
 import { updateArtifactsFile } from './artifactStore.js';
+import { getAppSettings } from '../db.js';
 
 export class LiveInsightsCoordinator {
   constructor({ getSession, emitLiveInsights }) {
@@ -32,6 +33,8 @@ export class LiveInsightsCoordinator {
     const session = this.getSession(meetingId);
     if (!state || !session) return;
     if (state.inFlight || state.timer) return;
+    // Live insights can be switched off; transcription and post-meeting analysis still run.
+    if (!getAppSettings().liveInsightsEnabled) return;
     if (session.transcriptEntries.length <= state.lastAnalyzedCount) return;
 
     state.timer = setTimeout(() => {
@@ -52,7 +55,8 @@ export class LiveInsightsCoordinator {
     try {
       const transcriptLines = session.transcriptEntries.map((entry) => `${entry.speakerLabel}: ${entry.text}`);
       const contextMeta = capTranscriptContext(transcriptLines, {
-        reservedTokens: 3000,
+        tokenCap: AI_CONFIG.liveTranscriptTokenCap,
+        reservedTokens: 0, // the cap above is the transcript budget itself
       });
 
       const prompt = buildLiveInsightsPrompt({
@@ -67,6 +71,9 @@ export class LiveInsightsCoordinator {
         tier: 'fast',
         prompt,
         maxOutputTokens: AI_CONFIG.liveAnalysisMaxCompletionTokens,
+        usageFile: session.artifactsPath,
+        purpose: 'live',
+        context: session.liveContextText ?? '',
       });
       state.lastModel = response.model;
 
@@ -143,7 +150,7 @@ function buildJargonInsights(previousItems = [], nextItems = [], updatedAt) {
     previousItems.map((item) => [normalizeKey(item.term), item]),
   );
 
-  return nextItems.map((item) => {
+  const fresh = nextItems.map((item) => {
     const previous = previousByKey.get(normalizeKey(item.term));
     return {
       id: previous?.id ?? createStableId('jargon', item.term),
@@ -153,6 +160,7 @@ function buildJargonInsights(previousItems = [], nextItems = [], updatedAt) {
       lastSeenAt: updatedAt,
     };
   });
+  return mergeKeep(fresh, previousItems, (item) => normalizeKey(item.term), AI_CONFIG.liveJargonKeep);
 }
 
 function buildLiveQuestions(previousItems = [], nextItems = [], updatedAt) {
@@ -187,12 +195,12 @@ function buildLiveQuestions(previousItems = [], nextItems = [], updatedAt) {
       partialSince,
     });
 
-    if (questions.length >= AI_CONFIG.liveQuestionMaxItems) {
-      break;
-    }
   }
 
-  return questions;
+  // Keep earlier complete questions; drop stale half-heard ones.
+  const carried = previousItems.filter((item) => !item.partial
+    || now - Date.parse(item.partialSince ?? item.createdAt) < AI_CONFIG.liveQuestionPartialTtlMs);
+  return mergeKeep(questions, carried, (item) => normalizeKey(item.text), AI_CONFIG.liveQuestionKeep);
 }
 
 function buildSuggestions(previousItems = [], nextItems = [], updatedAt) {
@@ -200,7 +208,7 @@ function buildSuggestions(previousItems = [], nextItems = [], updatedAt) {
     previousItems.map((item) => [normalizeKey(`${item.type}:${item.text}`), item]),
   );
 
-  return nextItems.map((item) => {
+  const fresh = nextItems.map((item) => {
     const previous = previousByKey.get(normalizeKey(`${item.type}:${item.text}`));
     return {
       id: previous?.id ?? createStableId('suggestion', `${item.type}:${item.text}`),
@@ -210,6 +218,14 @@ function buildSuggestions(previousItems = [], nextItems = [], updatedAt) {
       lastSeenAt: updatedAt,
     };
   });
+  return mergeKeep(fresh, previousItems, (item) => normalizeKey(`${item.type}:${item.text}`), AI_CONFIG.liveSuggestionKeep);
+}
+
+/** Newest results first, then earlier items not repeated this run, capped. */
+function mergeKeep(fresh, previous = [], keyOf, limit) {
+  const seen = new Set(fresh.map(keyOf));
+  const carried = previous.filter((item) => !seen.has(keyOf(item)));
+  return [...fresh, ...carried].slice(0, limit);
 }
 
 function isLikelyPartialQuestion(text) {

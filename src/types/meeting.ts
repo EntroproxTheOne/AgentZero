@@ -25,10 +25,110 @@ export interface SupportedLanguage {
   label: string;
 }
 
+export type ProcessingState = 'done' | 'recording' | 'transcribing' | 'analyzing' | 'error';
+
+export type WorkspaceResult<T> = { success: true; value: T } | { success: false; error: string };
+
+export interface ClientRecord {
+  id: number;
+  name: string;
+  notes: string;
+  created_at: string;
+  project_count?: number;
+  meeting_count?: number;
+  doc_count?: number;
+}
+
+export interface ProjectRecord {
+  id: number;
+  name: string;
+  notes: string;
+  client_id: number | null;
+  client_name?: string | null;
+  created_at: string;
+  meeting_count?: number;
+  doc_count?: number;
+}
+
+export interface ContextDoc {
+  id: number;
+  owner_type: 'client' | 'project';
+  owner_id: number;
+  file_name: string;
+  chars: number;
+  created_at: string;
+}
+
+export interface RecordingFileInfo {
+  filePath: string;
+  fileName: string;
+  durationSeconds: number | null;
+  hasVideo: boolean;
+  hasAudio: boolean;
+}
+
+export interface AskAllAnswer {
+  answer: string;
+  citations: { meetingId: number; note: string; title?: string; date?: string }[];
+  meetingsSearched: number;
+  transcriptsIncluded?: number;
+}
+
+export interface AppUser {
+  id: number;
+  username: string;
+  email: string;
+  listener_name: string;
+  isAdmin: boolean;
+  mustChangePassword: boolean;
+}
+
+export type AccountResult<T> = ({ success: true } & T) | { success: false; error: string };
+
+export interface MeetingCost {
+  totalInr: number;
+  totalUsd: number;
+  aiInr: number;
+  searchInr: number;
+  sttInr: number;
+  batchInr?: number;
+  speakerDetection?: boolean;
+  audioMinutes: number;
+  aiCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  byPurposeInr: Record<string, number>;
+  pricesVerified: boolean;
+}
+
+export interface CredentialsStatus {
+  location: string;
+  gcpProjectId: string | null;
+  serviceAccountEmail: string | null;
+  serviceAccountSource: 'settings' | 'environment' | 'invalid' | null;
+  geminiKeySet: boolean;
+  geminiKeyHint: string | null;
+  geminiKeySource: 'settings' | 'built-in' | 'environment' | null;
+  sarvamKeySource: 'settings' | 'built-in' | 'environment' | null;
+  builtInKeys: boolean;
+  sarvamKeySet: boolean;
+  sarvamKeyHint: string | null;
+  secureStorageAvailable: boolean;
+}
+
+export type AiConnectionTestResult =
+  | { ok: true; location: string; results: { model: string; ok: boolean; latencyMs?: number; error?: string }[] }
+  | { ok: false; error: string };
+
 export interface AppSettings {
-  transcriptionProvider: 'deepgram' | 'sarvam';
+  transcriptionProvider: 'sarvam';
   nativeIndiaMode: boolean;
   screenRecordingEnabled: boolean;
+  showCost: boolean;
+  onboardingDone: boolean;
+  webSearchEnabled: boolean;
+  liveInsightsEnabled: boolean;
+  diarizationEnabled: boolean;
   sarvam: {
     isBeta: boolean;
     model: string;
@@ -154,6 +254,15 @@ export interface MeetingRecord {
   audio_file_path: string | null;
   transcript_path: string | null;
   artifacts_path: string | null;
+  client_id?: number | null;
+  project_id?: number | null;
+  client_name?: string | null;
+  project_name?: string | null;
+  agenda?: string | null;
+  source?: 'live' | 'upload';
+  processing_state?: ProcessingState;
+  processing_note?: string | null;
+  batch_diarize?: number;
 }
 
 export interface MeetingArtifactsResponse {
@@ -182,4 +291,12 @@ export interface QuickLookResponse {
 export interface ExportMeetingResponse {
   filePath: string;
   format: 'pdf' | 'markdown';
+}
+
+export type MacAccessState = 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown';
+
+export interface MacPermissionStatus {
+  isMac: boolean;
+  microphone?: MacAccessState;
+  screen?: MacAccessState;
 }

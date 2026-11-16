@@ -1,24 +1,21 @@
 import { useState } from 'react';
-import { User, Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, ArrowRight } from 'lucide-react';
+import type { AppUser } from '../types/meeting';
 
 interface LoginPageProps {
-  onLogin: (user: { id: number; username: string; email: string; listener_name: string }) => void;
+  onLogin: (user: AppUser) => void;
 }
 
-type View = 'login' | 'register' | 'forgot';
-
 export default function LoginPage({ onLogin }: LoginPageProps) {
-  const [view, setView] = useState<View>('login');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
-
-  // Form fields
-  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  // Set after a successful sign-in that requires choosing a new password.
+  const [pendingUser, setPendingUser] = useState<AppUser | null>(null);
   const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,67 +23,45 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setLoading(true);
     try {
       const result = await window.electronAPI.login({ email, password });
-      if (result.success && result.user) {
+      if (!result.success) {
+        setError(result.error);
+      } else if (result.user.mustChangePassword) {
+        setPendingUser(result.user);
+      } else {
         onLogin(result.user);
-      } else {
-        setError(result.error || 'Login failed');
       }
-    } catch {
-      setError('An error occurred');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const handleRegister = async (e: React.FormEvent) => {
+  const handleSetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!pendingUser) return;
     setError('');
-    if (password.length < 6) {
-      setError('Password must be at least 6 characters');
+    if (newPassword !== confirmPassword) {
+      setError('The two passwords do not match.');
+      return;
+    }
+    if (newPassword === password) {
+      setError('Choose a password different from the one you signed in with.');
       return;
     }
     setLoading(true);
     try {
-      const result = await window.electronAPI.register({ username, email, password });
-      if (result.success) {
-        setSuccess('Account created! You can now log in.');
-        setView('login');
-        setPassword('');
+      const result = await window.electronAPI.updateUser({ userId: pendingUser.id, password: newPassword });
+      if (!result.success) {
+        setError(result.error);
       } else {
-        setError(result.error || 'Registration failed');
+        onLogin(result.user);
       }
-    } catch {
-      setError('An error occurred');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
-  };
-
-  const handleResetPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    if (newPassword.length < 6) {
-      setError('Password must be at least 6 characters');
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await window.electronAPI.resetPassword({ email, newPassword });
-      if (result.success) {
-        setSuccess('Password reset! You can now log in.');
-        setView('login');
-        setNewPassword('');
-      } else {
-        setError(result.error || 'Reset failed');
-      }
-    } catch {
-      setError('An error occurred');
-    }
-    setLoading(false);
-  };
-
-  const switchView = (v: View) => {
-    setView(v);
-    setError('');
-    setSuccess('');
   };
 
   return (
@@ -94,13 +69,14 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       <div className="login-card">
         <div className="login-brand">
           <h1 className="login-logo">Agent<span className="login-logo-accent">Zero</span></h1>
-          <p className="login-subtitle">AI-powered meeting assistant</p>
+          <p className="login-subtitle">
+            {pendingUser ? 'Choose a new password to finish signing in' : 'AI-powered meeting assistant'}
+          </p>
         </div>
 
-        {error && <div className="login-error">{error}</div>}
-        {success && <div className="login-success">{success}</div>}
+        {error && <div className="login-error" role="alert">{error}</div>}
 
-        {view === 'login' && (
+        {!pendingUser ? (
           <form onSubmit={handleLogin} className="login-form">
             <div className="login-field">
               <Mail size={16} className="login-field-icon" />
@@ -110,6 +86,8 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 className="login-input"
+                autoComplete="username"
+                autoFocus
                 required
               />
             </div>
@@ -121,111 +99,51 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="login-input"
+                autoComplete="current-password"
                 required
               />
-              <button type="button" className="login-eye" onClick={() => setShowPassword(!showPassword)}>
+              <button type="button" className="login-eye" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
                 {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
               </button>
             </div>
             <button type="submit" className="login-submit" disabled={loading}>
               {loading ? <div className="recorder-spinner" /> : <><ArrowRight size={16} /> Sign In</>}
             </button>
-            <div className="login-links">
-              <button type="button" className="login-link" onClick={() => switchView('forgot')}>Forgot password?</button>
-              <button type="button" className="login-link" onClick={() => switchView('register')}>Create account</button>
-            </div>
+            <p className="login-hint">Forgot your password? Ask an admin to reset it in Settings → Accounts.</p>
           </form>
-        )}
-
-        {view === 'login' && (
-          <>
-            <div className="login-divider"><span>or</span></div>
-            <button
-              className="login-guest"
-              onClick={() => onLogin({ id: 0, username: 'Guest', email: '', listener_name: 'Guest' })}
-            >
-              Continue without account
-            </button>
-          </>
-        )}
-
-        {view === 'register' && (
-          <form onSubmit={handleRegister} className="login-form">
+        ) : (
+          <form onSubmit={handleSetPassword} className="login-form">
             <div className="login-field">
-              <User size={16} className="login-field-icon" />
+              <Lock size={16} className="login-field-icon" />
               <input
-                type="text"
-                placeholder="Username (also used as listener name)"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                type={showPassword ? 'text' : 'password'}
+                placeholder="New password (min 8 characters)"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
                 className="login-input"
+                autoComplete="new-password"
+                autoFocus
                 required
               />
-            </div>
-            <div className="login-field">
-              <Mail size={16} className="login-field-icon" />
-              <input
-                type="email"
-                placeholder="Email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="login-input"
-                required
-              />
+              <button type="button" className="login-eye" onClick={() => setShowPassword(!showPassword)} aria-label={showPassword ? 'Hide password' : 'Show password'}>
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
             </div>
             <div className="login-field">
               <Lock size={16} className="login-field-icon" />
               <input
                 type={showPassword ? 'text' : 'password'}
-                placeholder="Password (min 6 chars)"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Confirm new password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
                 className="login-input"
-                required
-              />
-              <button type="button" className="login-eye" onClick={() => setShowPassword(!showPassword)}>
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-            <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? <div className="recorder-spinner" /> : <><ArrowRight size={16} /> Create Account</>}
-            </button>
-            <div className="login-links">
-              <button type="button" className="login-link" onClick={() => switchView('login')}>Already have an account? Sign in</button>
-            </div>
-          </form>
-        )}
-
-        {view === 'forgot' && (
-          <form onSubmit={handleResetPassword} className="login-form">
-            <div className="login-field">
-              <Mail size={16} className="login-field-icon" />
-              <input
-                type="email"
-                placeholder="Email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="login-input"
-                required
-              />
-            </div>
-            <div className="login-field">
-              <Lock size={16} className="login-field-icon" />
-              <input
-                type="password"
-                placeholder="New Password (min 6 chars)"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                className="login-input"
+                autoComplete="new-password"
                 required
               />
             </div>
             <button type="submit" className="login-submit" disabled={loading}>
-              {loading ? <div className="recorder-spinner" /> : <><ArrowRight size={16} /> Reset Password</>}
+              {loading ? <div className="recorder-spinner" /> : <><ArrowRight size={16} /> Save and continue</>}
             </button>
-            <div className="login-links">
-              <button type="button" className="login-link" onClick={() => switchView('login')}>Back to sign in</button>
-            </div>
           </form>
         )}
       </div>

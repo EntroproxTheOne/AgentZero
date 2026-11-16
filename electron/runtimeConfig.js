@@ -1,9 +1,4 @@
-const HARD_CODED_SECRETS = Object.freeze({
-  GEMINI_API_KEY: '',
-  GROQ_API_KEY: '',
-  DEEPGRAM_API_KEY: '',
-  SARVAM_API_KEY: '',
-});
+// Credentials live in ./credentials.js (encrypted, editable in Settings).
 
 const ACCESS_CONFIG = Object.freeze({
   // Keep the test-build access gate disabled for the Windows build.
@@ -12,20 +7,6 @@ const ACCESS_CONFIG = Object.freeze({
   expiresAt: '2026-04-05T23:59:59+05:30',
   shutdownMessage: 'This AgentZero test build has expired. Please contact the sender for a fresh copy.',
 });
-
-export function getConfiguredSecret(name) {
-  const envValue = process.env[name];
-  if (typeof envValue === 'string' && envValue.trim()) {
-    return envValue.trim();
-  }
-
-  const hardcodedValue = HARD_CODED_SECRETS[name];
-  if (typeof hardcodedValue === 'string' && hardcodedValue.trim()) {
-    return hardcodedValue.trim();
-  }
-
-  return '';
-}
 
 export function getAppAccessSnapshot(now = Date.now()) {
   if (!ACCESS_CONFIG.enabled || process.platform !== 'darwin') {

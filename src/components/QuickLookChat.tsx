@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Search, Send, Sparkles } from 'lucide-react';
+import { Globe, Mic, Search, Send, Sparkles } from 'lucide-react';
 import type { QuickLookHistoryItem } from '../types/meeting';
 
 interface QuickLookChatProps {
@@ -12,6 +12,7 @@ export default function QuickLookChat({ listenerName, meetingId }: QuickLookChat
   const [messages, setMessages] = useState<QuickLookHistoryItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [webSearch, setWebSearch] = useState(false);
   const chatAreaRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -43,7 +44,8 @@ export default function QuickLookChat({ listenerName, meetingId }: QuickLookChat
       const response = await window.electronAPI.askQuickLook({
         meetingId,
         question: trimmedQuestion,
-        history: messages,
+        history: webSearch ? [] : messages,
+        webSearch,
       });
 
       setMessages((previous) => [...previous, {
@@ -64,13 +66,29 @@ export default function QuickLookChat({ listenerName, meetingId }: QuickLookChat
       <div className="bento-panel-header">
         <Search size={16} />
         <span>QuickLook</span>
-        <span className="bento-listening-tag">Listening for "{listenerName}"</span>
+        <span className="bento-listening-tag" title={`Listening for "${listenerName}"`}>
+          <Mic size={11} />
+          <span className="bento-listening-name">{listenerName}</span>
+        </span>
+        <button
+          type="button"
+          className={`quicklook-web-toggle ${webSearch ? 'quicklook-web-toggle-on' : ''}`}
+          onClick={() => setWebSearch((value) => !value)}
+          aria-pressed={webSearch}
+          title={webSearch
+            ? 'Web search is on: only your question is sent to Google Search. The meeting and client details are not.'
+            : 'Turn on to search the web. Only your question is sent; the meeting and client details are not.'}
+        >
+          <Globe size={13} /> {webSearch ? 'Web on' : 'Web off'}
+        </button>
       </div>
 
       <div ref={chatAreaRef} className="ai-chat-area">
         {messages.length === 0 && !loading && !error && (
           <div className="ai-empty">
-            Ask anything about the meeting and QuickLook will answer from the transcript.
+            {webSearch
+              ? 'Web search is on. Only your question is sent to Google Search; the meeting and client details stay private.'
+              : 'Ask anything about the meeting and QuickLook will answer from the transcript.'}
           </div>
         )}
 
@@ -116,7 +134,7 @@ export default function QuickLookChat({ listenerName, meetingId }: QuickLookChat
       <div className="ai-input-wrap">
         <input
           type="text"
-          placeholder="Ask about the meeting..."
+          placeholder={webSearch ? 'Search the web…' : 'Ask about the meeting…'}
           value={question}
           onChange={(event) => setQuestion(event.target.value)}
           onKeyDown={(event) => {

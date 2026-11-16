@@ -14,18 +14,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@deepgram/sdk": "^5.0.0",
     "@google/genai": "^1.30.0",
     "better-sqlite3": "^12.6.2",
     "dotenv": "^17.3.1",
     "ffmpeg-static": "^5.3.0",
-    "groq-sdk": "^0.31.0",
     "lucide-react": "^0.577.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
     "@eslint/js": "^9.39.1",
     "@tailwindcss/postcss": "^4.2.1",
     "@types/node": "^24.10.1",
@@ -36,7 +35,6 @@
     "concurrently": "^9.2.1",
     "electron": "^40.8.0",
     "electron-builder": "^26.8.1",
-    "@electron/rebuild": "^4.2.0",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
@@ -57,7 +55,6 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
-      ".env",
       "package.json",
       "node_modules/ffmpeg-static/**/*"
     ],
@@ -69,8 +66,18 @@
     },
     "mac": {
       "target": [
-        "zip",
-        "dmg"
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
       ],
       "category": "public.app-category.productivity",
       "hardenedRuntime": false,
@@ -78,7 +85,17 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "AgentZero needs microphone access to capture your voice during meetings.",
         "NSAudioCaptureUsageDescription": "AgentZero needs audio capture access to record meeting audio during tests."
+      },
+      "identity": null
+    },
+    "extraResources": [
+      {
+        "from": "provisioning",
+        "to": ".",
+        "filter": [
+          "provisioned.json"
+        ]
       }
-    }
+    ]
   }
 }
