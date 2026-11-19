@@ -4,9 +4,10 @@ import {
   IndianRupee, Loader2, MessageSquare, Pencil, RotateCcw, Send, Sparkles, UserCheck, Users,
 } from 'lucide-react';
 import type {
-  ClientRecord, ExtractionDecision, ExtractionTask, MeetingArtifactsResponse, MeetingCost, MeetingTemplate,
+  ClientRecord, ExtractionDecision, ExtractionTask, MeetingArtifactsResponse, MeetingCost,
   ProcessingState, QuickLookHistoryItem,
 } from '../types/meeting';
+import MeetingDocuments from './MeetingDocuments';
 
 const cleanIpcError = (message: string) => message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
 const errorText = (error: unknown) => (error instanceof Error ? cleanIpcError(error.message) : String(error));
@@ -456,6 +457,7 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
         </div>
 
         <div className="pm-right-col">
+          <MeetingDocuments dbId={meetingDbId} artifacts={artifacts} ready={Boolean(extraction)} onExportPdf={() => void handleExport('pdf')} />
           {meetingData ? (
             <MeetingAsk key={meetingDbId} dbId={meetingDbId} ready={Boolean(extraction)} initialHistory={artifacts?.ask?.history ?? []} onJump={jumpTo} />
           ) : (
@@ -547,12 +549,10 @@ function MeetingAsk({ dbId, ready, initialHistory, onJump }: { dbId: number; rea
   const [question, setQuestion] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [templates, setTemplates] = useState<MeetingTemplate[]>([]);
   const [copied, setCopied] = useState<number | null>(null);
   const areaRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { setMessages(initialHistory); }, [dbId]);
-  useEffect(() => { void window.electronAPI?.listTemplates().then(setTemplates).catch(() => {}); }, []);
   useEffect(() => { areaRef.current?.scrollTo({ top: areaRef.current.scrollHeight, behavior: 'smooth' }); }, [messages, busy]);
 
   const ask = async () => {
@@ -574,22 +574,6 @@ function MeetingAsk({ dbId, ready, initialHistory, onJump }: { dbId: number; rea
     }
   };
 
-  const runTemplate = async (template: MeetingTemplate) => {
-    if (busy) return;
-    setError(null);
-    setMessages((list) => [...list, { role: 'user', text: template.name }]);
-    setBusy(true);
-    try {
-      const result = await window.electronAPI.runTemplate({ dbId, templateId: template.id });
-      if (!result.success) throw new Error(result.error);
-      setMessages((list) => [...list, { role: 'ai', text: result.value.text }]);
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const copy = async (text: string, index: number) => {
     await navigator.clipboard.writeText(text.replace(/\s?\[L\d+\]/g, ''));
     setCopied(index);
@@ -599,16 +583,9 @@ function MeetingAsk({ dbId, ready, initialHistory, onJump }: { dbId: number; rea
   return (
     <div className="bento-panel pm-ask">
       <div className="bento-panel-header"><Sparkles size={16} /><span>Ask about this meeting</span></div>
-      <div className="pm-ask-templates">
-        {templates.map((template) => (
-          <button key={template.id} type="button" className="meeting-chip pm-template-chip" disabled={!ready || busy} onClick={() => void runTemplate(template)}>
-            {template.name}
-          </button>
-        ))}
-      </div>
       <div ref={areaRef} className="ai-chat-area pm-ask-area">
         {messages.length === 0 && !busy && (
-          <div className="ai-empty">{ready ? 'Ask anything about the meeting, or pick a template above. Answers cite transcript lines.' : 'Available once the meeting record is ready.'}</div>
+          <div className="ai-empty">{ready ? 'Ask anything about the meeting, e.g. "What did we decide about the loans?" Answers cite transcript lines.' : 'Available once the meeting record is ready.'}</div>
         )}
         {messages.map((message, index) => (
           <div key={index} className={`ai-msg ai-msg-${message.role}`}>

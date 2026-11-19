@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, session, systemPreferences } from 'electron';
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Notification, session, systemPreferences } from 'electron';
 import path from 'path';
 import fs from 'fs';
 import fsPromises from 'fs/promises';
@@ -923,7 +923,14 @@ registerGuardedHandle('stop-meeting', async (_event, { meetingId, dbId, startTim
     ? path.join(sessionState.meetingFolder, finalName)
     : null;
 
-  if (sessionState.tempPath && finalPath && fs.existsSync(sessionState.tempPath)) {
+  // The meeting ends now (not after the file conversions below).
+  sessionState.endTime = Date.now();
+  sessionState.status = 'stopped';
+  await sessionState.levelsWriter?.finalize().catch(() => {});
+
+  // Video -> MP4 and meeting audio -> MP3 run side by side, so Stop returns sooner.
+  const convertVideo = async () => {
+    if (!(sessionState.tempPath && finalPath && fs.existsSync(sessionState.tempPath))) return;
     try {
       await finalizeVideoMp4(sessionState.tempPath, finalPath);
       fs.unlinkSync(sessionState.tempPath);
@@ -934,15 +941,10 @@ registerGuardedHandle('stop-meeting', async (_event, { meetingId, dbId, startTim
       fs.renameSync(sessionState.tempPath, fallbackPath);
       finalPath = fallbackPath;
     }
-  }
-
-  sessionState.endTime = Date.now();
-  sessionState.status = 'stopped';
-  await sessionState.levelsWriter?.finalize().catch(() => {});
-
-  // Meeting audio -> compact MP3 (playable everywhere, used for speaker detection).
+  };
   let audioPath = null;
-  if (sessionState.audioWriter) {
+  const convertAudio = async () => {
+    if (!sessionState.audioWriter) return;
     try {
       await sessionState.audioWriter.finalize();
       audioPath = path.join(sessionState.meetingFolder, `${nameBase}.mp3`);
@@ -952,7 +954,8 @@ registerGuardedHandle('stop-meeting', async (_event, { meetingId, dbId, startTim
       console.error('[Main] Could not prepare meeting audio for speaker detection:', error.message);
       audioPath = null;
     }
-  }
+  };
+  await Promise.all([convertVideo(), convertAudio()]);
 
   getDB().prepare(`
     UPDATE Meetings
@@ -1271,6 +1274,18 @@ registerGuardedHandle('improve-speakers', async (_event, { dbId } = {}) => works
 }));
 
 registerGuardedHandle('get-cost-rates', async () => perHourRates());
+
+// Recording left running with nobody speaking: bring the app to the front and notify.
+registerGuardedHandle('request-attention', async (_event, { title, body } = {}) => {
+  if (!mainWindow) return false;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.setAlwaysOnTop(true);
+  setTimeout(() => mainWindow?.setAlwaysOnTop(false), 15_000);
+  mainWindow.flashFrame(true);
+  if (Notification.isSupported()) new Notification({ title: String(title ?? 'AgentZero'), body: String(body ?? '') }).show();
+  return true;
+});
 
 /** Structured record of one meeting (CRM-ready: client, decisions, tasks with owner/due/status and source lines). */
 registerGuardedHandle('export-meeting-json', async (_event, { dbId } = {}) => workspaceResult(async () => {

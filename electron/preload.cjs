@@ -113,6 +113,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   refreshMeetingRecord: (data) => ipcRenderer.invoke('refresh-meeting-record', data),
   improveSpeakers: (data) => ipcRenderer.invoke('improve-speakers', data),
   getCostRates: () => ipcRenderer.invoke('get-cost-rates'),
+  requestAttention: (data) => ipcRenderer.invoke('request-attention', data),
   exportMeetingJson: (data) => ipcRenderer.invoke('export-meeting-json', data),
   log: (level, ...args) => ipcRenderer.send('log-from-renderer', level, ...args),
 });

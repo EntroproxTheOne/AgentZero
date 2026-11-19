@@ -119,6 +119,7 @@ declare global {
       reassignLine: (data: { dbId: number; lineId: number; speakerLabel: string }) => Promise<WorkspaceResult<boolean>>;
       refreshMeetingRecord: (data: { dbId: number }) => Promise<{ success: boolean }>;
       improveSpeakers: (data: { dbId: number }) => Promise<WorkspaceResult<boolean>>;
+      requestAttention: (data: { title: string; body: string }) => Promise<boolean>;
       getCostRates: () => Promise<{ notesTranscriptionInr: number; liveTranscriptionInr: number }>;
       exportMeetingJson: (data: { dbId: number }) => Promise<WorkspaceResult<{ filePath: string }>>;
       log: (level: 'info' | 'warn' | 'error', ...args: unknown[]) => void;

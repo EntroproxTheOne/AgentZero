@@ -15,6 +15,7 @@ import UploadRecordingDialog from './components/UploadRecordingDialog';
 import MacPermissions from './components/MacPermissions';
 import CaptureBar from './components/CaptureBar';
 import NotesRecording from './components/NotesRecording';
+import SilenceGuard from './components/SilenceGuard';
 import type { CaptureControls, CaptureState } from './components/capture';
 import type { AppUser, CurrentMeetingInfo } from './types/meeting';
 
@@ -198,6 +199,7 @@ function App() {
             </button>
           </header>
           <CaptureBar state={captureState} controls={captureControls} transcriptStatus={sttStatus} />
+          <SilenceGuard key={currentMeeting.meetingId} onStop={() => void handleStopClick()} />
           {stopError && (
             <div className="detected-banner detected-banner-warn" role="alert">
               <span>{stopError}</span>

@@ -127,18 +127,40 @@ export function deleteTemplate(id) {
   return listTemplates();
 }
 
+/**
+ * One-click documents: prepared in the background and saved under
+ * artifacts.documents[templateId] (status running / ready / error), so the
+ * button shows "Ready" even after the user leaves and comes back.
+ */
 export async function runTemplate({ dbId, templateId }) {
   const template = getDB().prepare('SELECT * FROM Templates WHERE id = ?').get(templateId);
   if (!template) throw new Error('Template not found');
   const { meeting, artifacts } = await loadMeeting(dbId);
   const full = extractionForPrompt(artifacts?.extraction);
   if (!full) throw new Error('The meeting record is not ready yet.');
+  const key = String(template.id);
+  const setDoc = (doc) => updateArtifactsFile(meeting.artifacts_path, (current) => ({
+    ...current,
+    documents: { ...(current.documents ?? {}), [key]: { name: template.name, ...doc, updatedAt: new Date().toISOString() } },
+  })).catch(() => {});
+  await setDoc({ status: 'running' });
+  try {
+    const text = await writeFromRecord({ meeting, template, full });
+    await setDoc({ status: 'ready', text });
+    return { text, templateName: template.name };
+  } catch (error) {
+    await setDoc({ status: 'error', error: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
+}
+
+async function writeFromRecord({ meeting, template, full }) {
   // Client-facing text must not repeat what was later changed.
   const extraction = { ...full, decisions: full.decisions.filter((d) => d.status !== 'reversed'), action_items: full.action_items.filter((a) => a.status !== 'cancelled') };
   const prompt = [
     'You write a document from a meeting record. Return valid JSON only: {"text":"string"}',
     'The meeting record below is the only source of facts. Do not add decisions, tasks, figures, owners or dates that are not in it.',
-    'Ignore decisions with status "reversed". Present "proposed", "discussed" and "unclear" items as not yet decided.',
+    'Present "proposed", "discussed" and "unclear" items as not yet decided.',
     'Write plain text (simple "- " bullets allowed), ready to copy.',
     '',
     `Meeting: ${meeting.title}`,
@@ -164,5 +186,5 @@ export async function runTemplate({ dbId, templateId }) {
   } catch {
     text = extractLooseJsonStringField(response.text, 'text');
   }
-  return { text: text || 'Nothing was generated.', templateName: template.name };
+  return text || 'Nothing was generated.';
 }

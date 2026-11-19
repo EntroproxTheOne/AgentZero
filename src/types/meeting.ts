@@ -254,6 +254,7 @@ export interface MeetingArtifacts {
   extractionStale?: boolean;
   speakerMap?: SpeakerMap | null;
   ask?: { history: QuickLookHistoryItem[] };
+  documents?: Record<string, { name: string; status: 'running' | 'ready' | 'error'; text?: string; error?: string; updatedAt: string }>;
   usage?: { sttBatch?: { diarized?: boolean } | null };
 }
 
