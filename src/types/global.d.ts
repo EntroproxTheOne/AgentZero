@@ -21,6 +21,9 @@ import type {
   QuickLookResponse,
   RuntimeInfo,
   TranscriptEntry,
+  RecordingMode,
+  MeetingTemplate,
+  MeetingExtraction,
 } from './meeting';
 
 export {};
@@ -40,7 +43,7 @@ declare global {
       sendVideoChunk: (meetingId: number, buffer: ArrayBuffer) => void;
       flushMeetingWrites: (data: { meetingId: number }) => Promise<void>;
       detectMeetingApps: () => Promise<string[]>;
-      startMeeting: (data: { title: string; recordScreen?: boolean; clientId?: number | null; projectId?: number | null; agenda?: string; diarize?: boolean }) => Promise<CurrentMeetingInfo & { meetingFolder: string; nameBase: string }>;
+      startMeeting: (data: { title: string; recordScreen?: boolean; clientId?: number | null; projectId?: number | null; agenda?: string; mode?: RecordingMode }) => Promise<CurrentMeetingInfo & { meetingFolder: string; nameBase: string }>;
       stopMeeting: (data: { meetingId: number; dbId: number; startTime: number; title: string }) => Promise<(CurrentMeetingInfo & { discarded?: false }) | { discarded: true; discardReason: string } | null>;
       getMeetings: () => Promise<MeetingRecord[]>;
       getMeetingArtifacts: (data: { dbId: number }) => Promise<MeetingArtifactsResponse | null>;
@@ -69,7 +72,7 @@ declare global {
       addDocNote: (data: { ownerType: 'client' | 'project'; ownerId: number; title: string; text: string }) => Promise<WorkspaceResult<{ id: number }>>;
       deleteDoc: (data: { id: number }) => Promise<WorkspaceResult<unknown>>;
       pickRecordingFile: () => Promise<RecordingFileInfo | null>;
-      uploadRecording: (data: { filePath: string; title?: string; clientId?: number | null; projectId?: number | null; agenda?: string; diarize?: boolean }) => Promise<WorkspaceResult<{ dbId: number; title: string }>>;
+      uploadRecording: (data: { filePath: string; title?: string; clientId?: number | null; projectId?: number | null; agenda?: string }) => Promise<WorkspaceResult<{ dbId: number; title: string }>>;
       retryMeetingProcessing: (data: { dbId: number }) => Promise<{ success: boolean }>;
       updateMeetingContext: (data: { dbId: number; clientId?: number | null; projectId?: number | null; agenda?: string }) => Promise<{ success: boolean }>;
       askAllMeetings: (data: { question: string; clientId?: number | null; projectId?: number | null; history?: { role: 'user' | 'assistant'; text: string }[] }) => Promise<WorkspaceResult<AskAllAnswer>>;
@@ -82,7 +85,7 @@ declare global {
       relaunchApp: () => Promise<void>;
       updateListenerName: (data: { userId: number; listenerName: string }) => Promise<{ success: boolean }>;
       getAppSettings: () => Promise<AppSettings>;
-      updateAppSettings: (data: { screenRecordingEnabled?: boolean; showCost?: boolean; onboardingDone?: boolean; webSearchEnabled?: boolean; liveInsightsEnabled?: boolean; diarizationEnabled?: boolean }) => Promise<AppSettings>;
+      updateAppSettings: (data: { screenRecordingEnabled?: boolean; showCost?: boolean; onboardingDone?: boolean; webSearchEnabled?: boolean; recordingMode?: RecordingMode; autoInsightsMinutes?: number }) => Promise<AppSettings>;
       getCredentialsStatus: () => Promise<CredentialsStatus>;
       updateCredentials: (data: { gcpProjectId?: string; serviceAccountJson?: string; sarvamApiKey?: string; geminiApiKey?: string }) => Promise<CredentialsStatus>;
       testAiConnection: () => Promise<AiConnectionTestResult>;
@@ -103,6 +106,21 @@ declare global {
       onAccessState: (callback: (payload: RuntimeInfo) => void) => void;
       offAccessState: () => void;
       askQuickLook: (data: { meetingId: number; question: string; history: QuickLookHistoryItem[]; webSearch?: boolean }) => Promise<QuickLookResponse>;
+      sendCaptureLevels: (meetingId: number, startEpoch: number, frames: number[]) => void;
+      goLive: (data: { meetingId: number; catchUp: boolean }) => Promise<{ ok: boolean }>;
+      askMeeting: (data: { dbId: number; question: string; history: QuickLookHistoryItem[] }) => Promise<WorkspaceResult<{ answer: string; citations: number[] }>>;
+      listTemplates: () => Promise<MeetingTemplate[]>;
+      saveTemplate: (data: { id?: number; name: string; instructions: string }) => Promise<WorkspaceResult<MeetingTemplate[]>>;
+      deleteTemplate: (data: { id: number }) => Promise<WorkspaceResult<MeetingTemplate[]>>;
+      runTemplate: (data: { dbId: number; templateId: number }) => Promise<WorkspaceResult<{ text: string; templateName: string }>>;
+      editMeetingItem: (data: { dbId: number; kind: 'decision' | 'task'; id: string; patch: Record<string, unknown> }) => Promise<WorkspaceResult<MeetingExtraction>>;
+      renameSpeaker: (data: { dbId: number; from: string; to: string }) => Promise<WorkspaceResult<boolean>>;
+      confirmOwner: (data: { dbId: number; speakerId: string; isOwner: boolean }) => Promise<WorkspaceResult<{ changed: boolean }>>;
+      reassignLine: (data: { dbId: number; lineId: number; speakerLabel: string }) => Promise<WorkspaceResult<boolean>>;
+      refreshMeetingRecord: (data: { dbId: number }) => Promise<{ success: boolean }>;
+      improveSpeakers: (data: { dbId: number }) => Promise<WorkspaceResult<boolean>>;
+      getCostRates: () => Promise<{ notesTranscriptionInr: number; liveTranscriptionInr: number }>;
+      exportMeetingJson: (data: { dbId: number }) => Promise<WorkspaceResult<{ filePath: string }>>;
       log: (level: 'info' | 'warn' | 'error', ...args: unknown[]) => void;
     };
   }

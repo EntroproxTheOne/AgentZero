@@ -169,5 +169,25 @@ export function toEntries(result) {
       : [];
   }
   const ends = entries.map((entry) => entry.endSeconds).filter((value) => typeof value === 'number');
-  return { entries, languageCode, durationSeconds: ends.length ? Math.max(...ends) : null };
+  return { entries, languageCode, durationSeconds: ends.length ? Math.max(...ends) : null, segments: toSegments(result, entries) };
+}
+
+/**
+ * Timed text chunks (used by the "Go live" catch-up, which runs without
+ * diarization): Sarvam's timestamps when present, else the whole transcript.
+ */
+function toSegments(result, entries) {
+  const ts = result?.timestamps;
+  const words = Array.isArray(ts?.words) ? ts.words : null;
+  const starts = Array.isArray(ts?.start_time_seconds) ? ts.start_time_seconds : null;
+  const ends = Array.isArray(ts?.end_time_seconds) ? ts.end_time_seconds : null;
+  if (words && starts && ends && words.length === starts.length) {
+    return words.map((text, index) => ({ text: String(text).trim(), start: Number(starts[index]) || 0, end: Number(ends[index]) || 0 }))
+      .filter((segment) => segment.text);
+  }
+  if (entries.some((entry) => typeof entry.startSeconds === 'number')) {
+    return entries.map((entry) => ({ text: entry.text, start: entry.startSeconds ?? 0, end: entry.endSeconds ?? entry.startSeconds ?? 0 }));
+  }
+  const text = String(result?.transcript ?? '').trim();
+  return text ? [{ text, start: 0, end: 0 }] : [];
 }

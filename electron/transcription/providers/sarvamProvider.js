@@ -44,7 +44,7 @@ function emitStatus(mainWindow, meetingId, state, detail = null) {
   }
 }
 
-export async function createSarvamSession(meetingId, { mainWindow, onFinalEntry, connect = defaultConnect }) {
+export async function createSarvamSession(meetingId, { mainWindow, onFinalEntry, labelEntry = (entry) => entry, connect = defaultConnect }) {
   const apiKey = getSarvamApiKey();
   if (!apiKey) {
     console.warn('[Transcriber] Sarvam API key not set (Settings → AI), transcription disabled');
@@ -147,11 +147,12 @@ export async function createSarvamSession(meetingId, { mainWindow, onFinalEntry,
       case 'transcript.final': {
         const text = normalizeText(payload.text ?? '');
         if (!text) return;
-        const entry = {
+        // Live mode labels each utterance You / Client from the capture levels.
+        const entry = labelEntry({
           source: 'meeting', speakerId: null, transcript: text, timestamp: getTimestamp(),
           isFinal: true, interim: false, languageCode: payload.language ?? null,
           languageProbability: payload.language_confidence ?? null,
-        };
+        });
         emitTranscriptEntry(mainWindow, entry);
         const persistedEntry = buildPersistedEntry(entry);
         session.entries.push(persistedEntry);

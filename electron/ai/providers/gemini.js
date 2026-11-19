@@ -157,6 +157,8 @@ export async function generateGeminiJson({
   purpose = 'other',
   // User-supplied background (client/project notes, documents, agenda).
   context = '',
+  // 'low' / 'minimal' reasoning for cheap, frequent calls; dropped if a model rejects it.
+  thinkingLevel = null,
 }) {
   const candidates = getModelCandidates({ tier, model, fallbackModels });
   if (candidates.length === 0) {
@@ -184,15 +186,22 @@ export async function generateGeminiJson({
       try {
         await geminiLimiter.waitForTurn();
         const startedAt = Date.now();
-        const response = await client.models.generateContent({
-          model: candidate,
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-            maxOutputTokens: maxOutputTokens ?? AI_CONFIG.highlightsMaxCompletionTokens,
-            ...(includeSearch ? { tools: [{ googleSearch: {} }] } : {}),
-          },
-        });
+        const config = {
+          responseMimeType: 'application/json',
+          maxOutputTokens: maxOutputTokens ?? 8192,
+          ...(includeSearch ? { tools: [{ googleSearch: {} }] } : {}),
+        };
+        let response;
+        try {
+          response = await client.models.generateContent({
+            model: candidate,
+            contents: prompt,
+            config: thinkingLevel ? { ...config, thinkingConfig: { thinkingLevel } } : config,
+          });
+        } catch (error) {
+          if (!thinkingLevel) throw error;
+          response = await client.models.generateContent({ model: candidate, contents: prompt, config });
+        }
 
         // Billed even if the text turns out unusable, so record before extracting.
         await recordUsage(usageFile, { purpose, model: candidate, response });

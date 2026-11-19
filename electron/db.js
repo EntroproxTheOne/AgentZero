@@ -149,6 +149,64 @@ export function initDB() {
   addMeetingColumn('processing_note', 'TEXT');
   addMeetingColumn('batch_job_id', 'TEXT');
   addMeetingColumn('batch_diarize', 'INTEGER NOT NULL DEFAULT 0');
+  // notes = record, then one diarized batch pass; live = streaming captions.
+  addMeetingColumn('recording_mode', "TEXT NOT NULL DEFAULT 'notes'");
+  // The app owner's display name at recording time (speaker mapping uses it).
+  addMeetingColumn('owner_name', 'TEXT');
+
+  if (!appSettingsColumns.some((col) => col.name === 'recording_mode')) {
+    db.prepare("ALTER TABLE AppSettings ADD COLUMN recording_mode TEXT NOT NULL DEFAULT 'notes'").run();
+  }
+  if (!appSettingsColumns.some((col) => col.name === 'auto_insights_minutes')) {
+    // 0 = off. Only used in Live mode.
+    db.prepare('ALTER TABLE AppSettings ADD COLUMN auto_insights_minutes INTEGER NOT NULL DEFAULT 0').run();
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS Templates (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      instructions TEXT NOT NULL,
+      builtin INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    -- Decisions and tasks as structured records (one source of truth is the
+    -- meeting's extraction object; these rows mirror it for cross-meeting
+    -- queries and a future CRM sync).
+    CREATE TABLE IF NOT EXISTS MeetingItems (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meeting_id INTEGER NOT NULL REFERENCES Meetings (id) ON DELETE CASCADE,
+      client_id INTEGER,
+      kind TEXT NOT NULL CHECK (kind IN ('decision', 'task')),
+      ext_id TEXT NOT NULL,
+      topic TEXT,
+      text TEXT NOT NULL,
+      owner TEXT,
+      due TEXT,
+      status TEXT NOT NULL,
+      line_id INTEGER,
+      updated_at TEXT NOT NULL,
+      UNIQUE (meeting_id, kind, ext_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_meetingitems_client ON MeetingItems (client_id);
+    CREATE TABLE IF NOT EXISTS SpeakerFeedback (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      meeting_id INTEGER NOT NULL,
+      speaker_id TEXT NOT NULL,
+      predicted_owner INTEGER NOT NULL,
+      answer TEXT NOT NULL,
+      confidence REAL,
+      created_at TEXT NOT NULL
+    );
+  `);
+  const templateCount = db.prepare('SELECT COUNT(*) AS n FROM Templates').get().n;
+  if (templateCount === 0) {
+    const insert = db.prepare('INSERT INTO Templates (name, instructions, builtin, created_at) VALUES (?, ?, 1, ?)');
+    const at = new Date().toISOString();
+    insert.run('Client summary email', 'Write a warm, professional email from me to the client summarising the meeting: what we decided, what each side will do next (with dates where known) and any documents they need to send. Client-facing: leave out internal notes, open internal questions and anything marked unclear. Sign off with my name.', at);
+    insert.run('Internal follow-up checklist', 'Write an internal checklist for me and my team: every task with its owner and due date, decisions to record, documents to chase, and open questions to resolve before the next meeting. Group by owner. Flag anything unclear.', at);
+    insert.run('Task list with owners', 'List every action item as a table with columns Task, Owner, Due, Status. Keep UNASSIGNED owners as "Unassigned". Do not add tasks that are not in the record.', at);
+  }
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS Clients (
@@ -378,7 +436,7 @@ export function updateListenerName(userId, listenerName) {
 export function getAppSettings() {
   const row = db.prepare(`
     SELECT screen_recording_enabled, show_cost_enabled, onboarding_done, web_search_enabled,
-           live_insights_enabled, diarization_enabled
+           live_insights_enabled, diarization_enabled, recording_mode, auto_insights_minutes
     FROM AppSettings
     WHERE id = 1
   `).get();
@@ -393,8 +451,11 @@ export function getAppSettings() {
     showCost: row?.show_cost_enabled === undefined ? true : Boolean(row.show_cost_enabled),
     onboardingDone: Boolean(row?.onboarding_done),
     webSearchEnabled: Boolean(row?.web_search_enabled),
-    liveInsightsEnabled: row?.live_insights_enabled === undefined ? true : Boolean(row.live_insights_enabled),
-    diarizationEnabled: Boolean(row?.diarization_enabled),
+    // Notes mode always identifies speakers; these two are kept for older builds' rows.
+    liveInsightsEnabled: false,
+    diarizationEnabled: true,
+    recordingMode: row?.recording_mode === 'live' ? 'live' : 'notes',
+    autoInsightsMinutes: [0, 2, 5, 10].includes(Number(row?.auto_insights_minutes)) ? Number(row.auto_insights_minutes) : 0,
     sarvam: {
       isBeta: true,
       model: 'saaras:v4',
@@ -406,7 +467,7 @@ export function getAppSettings() {
 }
 
 export function updateAppSettings({
-  screenRecordingEnabled, showCost, onboardingDone, webSearchEnabled, liveInsightsEnabled, diarizationEnabled,
+  screenRecordingEnabled, showCost, onboardingDone, webSearchEnabled, recordingMode, autoInsightsMinutes,
 } = {}) {
   const current = getAppSettings();
   const pick = (value, fallback) => (typeof value === 'boolean' ? value : fallback) ? 1 : 0;
@@ -414,15 +475,15 @@ export function updateAppSettings({
     UPDATE AppSettings
     SET transcription_provider = 'sarvam', india_mode_enabled = 1,
         screen_recording_enabled = ?, show_cost_enabled = ?, onboarding_done = ?, web_search_enabled = ?,
-        live_insights_enabled = ?, diarization_enabled = ?
+        recording_mode = ?, auto_insights_minutes = ?
     WHERE id = 1
   `).run(
     pick(screenRecordingEnabled, current.screenRecordingEnabled),
     pick(showCost, current.showCost),
     pick(onboardingDone, current.onboardingDone),
     pick(webSearchEnabled, current.webSearchEnabled),
-    pick(liveInsightsEnabled, current.liveInsightsEnabled),
-    pick(diarizationEnabled, current.diarizationEnabled),
+    recordingMode === 'live' || recordingMode === 'notes' ? recordingMode : current.recordingMode,
+    [0, 2, 5, 10].includes(Number(autoInsightsMinutes)) ? Number(autoInsightsMinutes) : current.autoInsightsMinutes,
   );
 
   return getAppSettings();

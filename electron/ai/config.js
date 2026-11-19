@@ -5,35 +5,26 @@ export const AI_CONFIG = {
   // Vertex AI on a billed project; the old 5/min cap was for the free API-key tier.
   geminiRequestsPerMinute: 60,
   geminiRateLimitWindowMs: 60_000,
-  // Every 30 s, and only when new transcript arrived since the last run.
-  liveAnalysisIntervalMs: 30000,
-  // Roughly the last 10 minutes of speech; keeps live cost flat on long meetings.
-  liveTranscriptTokenCap: 8000,
-  // Background (agenda/client/project) budget for live calls; full budget for post-meeting.
+  // Live mode auto-insights: only speech since the last call plus a short running summary.
+  autoInsightsMaxCalls: 20,
+  autoInsightsSummaryMaxChars: 1200, // ≈300 tokens
   liveContextMaxChars: 6000,
-  // Live panels accumulate across the meeting instead of being replaced each run.
   liveJargonKeep: 12,
   liveQuestionKeep: 8,
   liveSuggestionKeep: 8,
-  liveInsightMaxJargonItems: 4,
-  liveQuestionMaxItems: 3,
-  liveSuggestionMaxItems: 3,
-  liveQuestionPartialTtlMs: 45000,
-  liveAnalysisMaxCompletionTokens: 4096,
-  highlightsMaxCompletionTokens: 8192,
   quickLookMaxCompletionTokens: 4096,
-  // 3.x models spend output tokens on reasoning; 8192 truncated long minutes' JSON.
-  minutesOfMeetingMaxCompletionTokens: 16384,
+  // One extraction call per meeting over the full transcript; 3.x models also spend output on reasoning.
+  extractionMaxCompletionTokens: 32768,
+  askMaxCompletionTokens: 8192,
   quickLookHistoryTurns: 6,
   // All served from Vertex AI asia-south1 (Mumbai).
   models: {
     fast: 'gemini-3.5-flash-lite',
     big: 'gemini-3.5-flash',
-    highlights: 'gemini-3.5-flash',
+    extraction: 'gemini-3.5-flash',
+    ask: 'gemini-3.5-flash',
     quickLook: 'gemini-3.5-flash-lite',
-    minutesOfMeeting: 'gemini-3.5-flash',
     live: 'gemini-3.5-flash-lite',
-    liveGujarati: 'gemini-3.5-flash-lite',
   },
   modelChains: {
     fast: ['gemini-3.5-flash-lite'],

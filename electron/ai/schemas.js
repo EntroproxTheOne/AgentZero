@@ -1,26 +1,6 @@
-import { AI_CONFIG } from './config.js';
 
 function isString(value) {
   return typeof value === 'string';
-}
-
-function isStringArray(value) {
-  return Array.isArray(value) && value.every(isString);
-}
-
-function uniqueTrimmedStrings(values) {
-  const seen = new Set();
-  const result = [];
-
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed) continue;
-    if (seen.has(trimmed.toLowerCase())) continue;
-    seen.add(trimmed.toLowerCase());
-    result.push(trimmed);
-  }
-
-  return result;
 }
 
 export function parseJsonText(rawText) {
@@ -161,33 +141,13 @@ export function validateLiveInsights(payload) {
   }
 
   normalized.jargon = uniqueByKey(normalized.jargon, (item) => item.term.toLowerCase())
-    .slice(0, AI_CONFIG.liveInsightMaxJargonItems);
+    .slice(0, 4);
   normalized.liveQuestions = uniqueByKey(normalized.liveQuestions, (item) => item.text.toLowerCase())
-    .slice(0, AI_CONFIG.liveQuestionMaxItems);
+    .slice(0, 3);
   normalized.suggestions = uniqueByKey(normalized.suggestions, (item) => `${item.type}:${item.text.toLowerCase()}`)
-    .slice(0, AI_CONFIG.liveSuggestionMaxItems);
+    .slice(0, 3);
 
   return normalized;
-}
-
-export function validateHighlights(payload) {
-  const summary = isString(payload?.summary) ? payload.summary.trim() : '';
-  const keyDiscussionPoints = isStringArray(payload?.keyDiscussionPoints)
-    ? uniqueTrimmedStrings(payload.keyDiscussionPoints)
-    : [];
-  const actionItems = isStringArray(payload?.actionItems)
-    ? uniqueTrimmedStrings(payload.actionItems)
-    : [];
-
-  if (!summary) {
-    throw new Error('Highlights response is missing summary');
-  }
-
-  return {
-    summary,
-    keyDiscussionPoints,
-    actionItems,
-  };
 }
 
 export function validateQuickLook(payload) {
@@ -197,46 +157,6 @@ export function validateQuickLook(payload) {
   }
 
   return { answer };
-}
-
-export function validateMinutesOfMeeting(payload) {
-  const title = isString(payload?.title) ? payload.title.trim() : '';
-  const overview = isString(payload?.overview) ? payload.overview.trim() : '';
-  const discussionPoints = isStringArray(payload?.discussionPoints)
-    ? uniqueTrimmedStrings(payload.discussionPoints)
-    : [];
-  const decisions = isStringArray(payload?.decisions)
-    ? uniqueTrimmedStrings(payload.decisions)
-    : [];
-  const risksAndBlockers = isStringArray(payload?.risksAndBlockers)
-    ? uniqueTrimmedStrings(payload.risksAndBlockers)
-    : [];
-  const followUps = isStringArray(payload?.followUps)
-    ? uniqueTrimmedStrings(payload.followUps)
-    : [];
-  const actionItems = Array.isArray(payload?.actionItems)
-    ? payload.actionItems
-      .map((item) => normalizeMomActionItem(item))
-      .filter(Boolean)
-    : [];
-
-  if (!title) {
-    throw new Error('Minutes of meeting response is missing title');
-  }
-
-  if (!overview) {
-    throw new Error('Minutes of meeting response is missing overview');
-  }
-
-  return {
-    title,
-    overview,
-    discussionPoints,
-    decisions,
-    actionItems,
-    risksAndBlockers,
-    followUps,
-  };
 }
 
 export function extractLooseJsonStringField(rawText, fieldName) {
@@ -271,21 +191,6 @@ function uniqueByKey(items, getKey) {
   }
 
   return result;
-}
-
-function normalizeMomActionItem(item) {
-  if (!item || !isString(item.task)) return null;
-
-  const task = item.task.trim();
-  if (!task) return null;
-
-  return {
-    task,
-    owner: isString(item.owner) && item.owner.trim() ? item.owner.trim() : 'Unassigned',
-    deadline: isString(item.deadline) && item.deadline.trim() ? item.deadline.trim() : 'Not specified',
-    status: isString(item.status) && item.status.trim() ? item.status.trim() : 'Not specified',
-    notes: isString(item.notes) && item.notes.trim() ? item.notes.trim() : '',
-  };
 }
 
 function decodeLooseJsonString(value) {

@@ -14,6 +14,7 @@ import AskPage from './components/AskPage';
 import UploadRecordingDialog from './components/UploadRecordingDialog';
 import MacPermissions from './components/MacPermissions';
 import CaptureBar from './components/CaptureBar';
+import NotesRecording from './components/NotesRecording';
 import type { CaptureControls, CaptureState } from './components/capture';
 import type { AppUser, CurrentMeetingInfo } from './types/meeting';
 
@@ -185,7 +186,7 @@ function App() {
           <header className="page-header page-header-row">
             <div>
               <h2 className="page-label">Recording in progress</h2>
-              <h3 className="page-title">Live Meeting</h3>
+              <h3 className="page-title">{currentMeeting.mode === 'live' ? 'Live meeting' : 'Notes meeting'}</h3>
             </div>
             <button
               onClick={() => void handleStopClick()}
@@ -201,11 +202,19 @@ function App() {
               <span>{stopError}</span>
             </div>
           )}
-          <BentoGrid
-            key={currentMeeting.meetingId}
-            meetingId={currentMeeting.meetingId}
-            listenerName={user.listener_name || user.username}
-          />
+          {currentMeeting.mode === 'live' ? (
+            <BentoGrid
+              key={currentMeeting.meetingId}
+              meetingId={currentMeeting.meetingId}
+              listenerName={user.listener_name || user.username}
+            />
+          ) : (
+            <NotesRecording
+              meetingId={currentMeeting.meetingId}
+              startTime={currentMeeting.startTime}
+              onWentLive={() => setCurrentMeeting((meeting) => (meeting ? { ...meeting, mode: 'live' } : meeting))}
+            />
+          )}
         </>
       );
     }

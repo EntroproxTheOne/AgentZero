@@ -1,6 +1,9 @@
 export interface TranscriptEntry {
   source: 'you' | 'meeting';
   speakerId: number | null;
+  /** Live mode: You / Client name from the capture levels. */
+  speakerLabel?: string;
+  catchUp?: boolean;
   transcript: string;
   timestamp: string;
   isFinal: boolean;
@@ -69,7 +72,7 @@ export interface RecordingFileInfo {
 
 export interface AskAllAnswer {
   answer: string;
-  citations: { meetingId: number; note: string; title?: string; date?: string }[];
+  citations: { meetingId: number; lineId?: number | null; note: string; title?: string; date?: string }[];
   meetingsSearched: number;
   transcriptsIncluded?: number;
 }
@@ -98,6 +101,7 @@ export interface MeetingCost {
   inputTokens: number;
   outputTokens: number;
   byPurposeInr: Record<string, number>;
+  breakdown?: { transcriptionInr: number; notesInr: number; askInr: number; liveInsightsInr: number };
   pricesVerified: boolean;
 }
 
@@ -129,6 +133,9 @@ export interface AppSettings {
   webSearchEnabled: boolean;
   liveInsightsEnabled: boolean;
   diarizationEnabled: boolean;
+  recordingMode: RecordingMode;
+  /** Live mode auto-insights: 0 = off, else every N minutes. */
+  autoInsightsMinutes: number;
   sarvam: {
     isBeta: boolean;
     model: string;
@@ -220,6 +227,7 @@ export interface QuickLookHistoryItem {
   role: 'user' | 'ai';
   text: string;
   usedSearch?: boolean;
+  citations?: number[];
 }
 
 export interface MeetingArtifacts {
@@ -242,6 +250,71 @@ export interface MeetingArtifacts {
     error: string | null;
     history: QuickLookHistoryItem[];
   };
+  extraction?: MeetingExtraction;
+  extractionStale?: boolean;
+  speakerMap?: SpeakerMap | null;
+  ask?: { history: QuickLookHistoryItem[] };
+  usage?: { sttBatch?: { diarized?: boolean } | null };
+}
+
+export type RecordingMode = 'notes' | 'live';
+
+export interface MeetingTemplate {
+  id: number;
+  name: string;
+  instructions: string;
+  builtin: boolean;
+}
+
+export interface ExtractionEvidence { line_id: number; speaker: string; quote: string }
+
+export interface ExtractionDecision {
+  id: string;
+  topic: string;
+  statement: string;
+  status: 'confirmed' | 'proposed' | 'discussed' | 'unclear' | 'reversed';
+  evidence: ExtractionEvidence[];
+  superseded_by: string | null;
+  edited?: boolean;
+}
+
+export interface ExtractionTask {
+  id: string;
+  task: string;
+  owner: string;
+  owner_evidence_line_id: number | null;
+  due: string | null;
+  status: 'confirmed' | 'tentative' | 'cancelled';
+  done: boolean;
+  edited?: boolean;
+}
+
+export interface MeetingExtraction {
+  status: 'ready';
+  title: string;
+  summary: string;
+  key_points: { text: string; line_ids: number[] }[];
+  decisions: ExtractionDecision[];
+  action_items: ExtractionTask[];
+  figures: { label: string; value: string; line_id: number | null }[];
+  documents_requested: { item: string; from: string; line_id: number | null }[];
+  open_questions: { text: string; line_id: number | null }[];
+  oneSided?: boolean;
+  validationProblems?: string[];
+}
+
+export interface SpeakerInfo { name: string; side: 'local' | 'remote' | 'unknown'; share: number | null; seconds: number; isOwner: boolean }
+
+export interface SpeakerMap {
+  mode: 'diarized' | 'live';
+  oneSided: boolean;
+  speakers?: Record<string, SpeakerInfo>;
+  ownerId?: string | null;
+  confidence?: number;
+  needsConfirmation?: boolean;
+  confirmed?: boolean;
+  needsImprove?: boolean;
+  names?: string[];
 }
 
 export interface MeetingRecord {
@@ -263,6 +336,8 @@ export interface MeetingRecord {
   processing_state?: ProcessingState;
   processing_note?: string | null;
   batch_diarize?: number;
+  recording_mode?: RecordingMode;
+  owner_name?: string | null;
 }
 
 export interface MeetingArtifactsResponse {
@@ -281,6 +356,7 @@ export interface CurrentMeetingInfo {
   recordScreen: boolean;
   endTime?: number;
   meetingFolder?: string;
+  mode?: RecordingMode;
 }
 
 export interface QuickLookResponse {

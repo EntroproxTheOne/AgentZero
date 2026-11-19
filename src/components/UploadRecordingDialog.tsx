@@ -23,12 +23,10 @@ export default function UploadRecordingDialog({ onClose, onUploaded }: UploadRec
   const [file, setFile] = useState<RecordingFileInfo | null>(null);
   const [title, setTitle] = useState('');
   const [context, setContext] = useState<MeetingContextValue>(EMPTY_CONTEXT);
-  const [diarize, setDiarize] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
   useEffect(() => {
-    void window.electronAPI?.getAppSettings().then((settings) => setDiarize(settings.diarizationEnabled)).catch(() => {});
   }, []);
 
   const pickFile = async () => {
@@ -44,7 +42,7 @@ export default function UploadRecordingDialog({ onClose, onUploaded }: UploadRec
   };
 
   const minutes = file?.durationSeconds ? file.durationSeconds / 60 : 0;
-  const estimate = minutes * (diarize ? 0.59 : 0.49);
+  const estimate = minutes * 0.59; // one pass with speaker labels
 
   const submit = async () => {
     if (!file) return;
@@ -56,7 +54,6 @@ export default function UploadRecordingDialog({ onClose, onUploaded }: UploadRec
       clientId: context.clientId,
       projectId: context.projectId,
       agenda: context.agenda,
-      diarize,
     });
     setBusy(false);
     if (!result.success) {
@@ -101,13 +98,6 @@ export default function UploadRecordingDialog({ onClose, onUploaded }: UploadRec
 
         <ContextPicker value={context} onChange={setContext} clients={clients} projects={projects} compact />
 
-        <label className="upload-toggle">
-          <input type="checkbox" checked={diarize} onChange={(e) => setDiarize(e.target.checked)} />
-          <span>
-            <strong>Identify speakers</strong> (Speaker 1, Speaker 2…)
-            <em>Adds ₹0.10 per minute of audio (₹0.59 instead of ₹0.49)</em>
-          </span>
-        </label>
 
         {error && <p className="settings-error-text" role="alert">{error}</p>}
 

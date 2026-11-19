@@ -1,5 +1,8 @@
-import { AI_CONFIG, capTranscriptContext } from './config.js';
-import { buildLiveInsightsPrompt } from './prompts.js';
+// Live mode auto-insights (off by default; Settings → "every 2 / 5 / 10 min").
+// Each call sends ONLY the speech since the previous call plus a short running
+// summary (≈300 tokens), at low reasoning, with a hard cap per meeting. There
+// is no rolling transcript window.
+import { AI_CONFIG } from './config.js';
 import { parseJsonText, validateLiveInsights } from './schemas.js';
 import { generateGeminiJson } from './providers/gemini.js';
 import { updateArtifactsFile } from './artifactStore.js';
@@ -12,238 +15,92 @@ export class LiveInsightsCoordinator {
     this.meetings = new Map();
   }
 
-  registerMeeting(meetingId) {
-    this.meetings.set(meetingId, {
-      lastAnalyzedCount: 0,
-      timer: null,
-      inFlight: false,
-      lastProvider: null,
-      lastModel: null,
-    });
+  /** Start the timer for a meeting that is (or just went) live. No-op when the setting is off. */
+  start(meetingId) {
+    if (this.meetings.has(meetingId)) return;
+    const minutes = getAppSettings().autoInsightsMinutes;
+    if (!minutes) return;
+    const state = { lastIndex: 0, summary: '', calls: 0, inFlight: false, timer: null };
+    state.timer = setInterval(() => void this.run(meetingId), minutes * 60_000);
+    this.meetings.set(meetingId, state);
   }
 
   unregisterMeeting(meetingId) {
     const state = this.meetings.get(meetingId);
-    if (state?.timer) clearTimeout(state.timer);
+    if (state?.timer) clearInterval(state.timer);
     this.meetings.delete(meetingId);
   }
 
-  notifyTranscriptUpdated(meetingId) {
+  async run(meetingId) {
     const state = this.meetings.get(meetingId);
     const session = this.getSession(meetingId);
-    if (!state || !session) return;
-    if (state.inFlight || state.timer) return;
-    // Live insights can be switched off; transcription and post-meeting analysis still run.
-    if (!getAppSettings().liveInsightsEnabled) return;
-    if (session.transcriptEntries.length <= state.lastAnalyzedCount) return;
-
-    state.timer = setTimeout(() => {
-      state.timer = null;
-      void this.runAnalysis(meetingId);
-    }, AI_CONFIG.liveAnalysisIntervalMs);
-  }
-
-  async runAnalysis(meetingId) {
-    const state = this.meetings.get(meetingId);
-    const session = this.getSession(meetingId);
-    if (!state || !session) return;
-    if (state.inFlight) return;
-    if (session.transcriptEntries.length === 0) return;
-
+    if (!state || !session || state.inFlight) return;
+    if (state.calls >= AI_CONFIG.autoInsightsMaxCalls) {
+      this.unregisterMeeting(meetingId);
+      return;
+    }
+    const fresh = session.transcriptEntries.slice(state.lastIndex);
+    if (fresh.length === 0) return;
     state.inFlight = true;
-
     try {
-      const transcriptLines = session.transcriptEntries.map((entry) => `${entry.speakerLabel}: ${entry.text}`);
-      const contextMeta = capTranscriptContext(transcriptLines, {
-        tokenCap: AI_CONFIG.liveTranscriptTokenCap,
-        reservedTokens: 0, // the cap above is the transcript budget itself
-      });
-
-      const prompt = buildLiveInsightsPrompt({
-        transcriptText: contextMeta.text,
-        contextMeta,
-      });
-
-      const providerSelection = selectLiveInsightsProvider();
-      state.lastProvider = providerSelection.provider;
-      state.lastModel = providerSelection.model;
+      const prompt = [
+        'You help an adviser during a live meeting. Return valid JSON only:',
+        '{"summary":"running summary of the whole meeting so far, max 200 words","jargon":[{"term":"","explanation":""}],"liveQuestions":[{"text":""}],"suggestions":[{"text":"","type":"action|insight|followup"}]}',
+        'Rules: base everything on the new speech; 0-3 items per list; questions end with "?"; suggestions are addressed to the adviser as "you"; empty lists are fine.',
+        '',
+        `Summary so far: ${state.summary || '(meeting just started)'}`,
+        '',
+        'New speech since the last update:',
+        fresh.map((entry) => `${entry.speakerLabel}: ${entry.text}`).join('\n'),
+      ].join('\n');
       const response = await generateGeminiJson({
         tier: 'fast',
         prompt,
-        maxOutputTokens: AI_CONFIG.liveAnalysisMaxCompletionTokens,
+        maxOutputTokens: 2048,
         usageFile: session.artifactsPath,
         purpose: 'live',
-        context: session.liveContextText ?? '',
+        thinkingLevel: 'low',
       });
-      state.lastModel = response.model;
-
-      const liveInsights = validateLiveInsights(parseJsonText(response.text));
+      state.calls += 1;
+      state.lastIndex += fresh.length;
+      const parsed = parseJsonText(response.text);
+      state.summary = String(parsed?.summary ?? state.summary).slice(0, AI_CONFIG.autoInsightsSummaryMaxChars);
+      const insights = validateLiveInsights(parsed);
       const updatedAt = new Date().toISOString();
-      const debugEntry = {
-        provider: providerSelection.provider,
-        model: response.model,
-        updatedAt,
-        latencyMs: response.latencyMs,
-        estimatedInputTokens: contextMeta.estimatedTokens,
-        transcriptTruncated: contextMeta.truncated,
-        transcriptLines: contextMeta.lineCount,
-      };
-
-      state.lastAnalyzedCount = session.transcriptEntries.length;
-
       const artifacts = await updateArtifactsFile(session.artifactsPath, (current) => ({
-          ...current,
-          liveInsights: {
-            status: 'ready',
-            updatedAt,
-            error: null,
-          jargon: buildJargonInsights(current.liveInsights?.jargon, liveInsights.jargon, updatedAt),
-          liveQuestions: buildLiveQuestions(current.liveInsights?.liveQuestions, liveInsights.liveQuestions, updatedAt),
-          suggestions: buildSuggestions(current.liveInsights?.suggestions, liveInsights.suggestions, updatedAt),
-        },
-        debug: {
-          ...current.debug,
-          liveAnalysis: [...current.debug.liveAnalysis.slice(-19), debugEntry],
+        ...current,
+        liveInsights: {
+          status: 'ready',
+          updatedAt,
+          error: null,
+          jargon: keep(insights.jargon, current.liveInsights?.jargon, (i) => i.term, AI_CONFIG.liveJargonKeep),
+          liveQuestions: keep(insights.liveQuestions, current.liveInsights?.liveQuestions, (i) => i.text, AI_CONFIG.liveQuestionKeep),
+          suggestions: keep(insights.suggestions, current.liveInsights?.suggestions, (i) => i.text, AI_CONFIG.liveSuggestionKeep),
         },
       }));
-
       this.emitLiveInsights(meetingId, artifacts.liveInsights);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      await updateArtifactsFile(session.artifactsPath, (current) => ({
-          ...current,
-          liveInsights: {
-            ...current.liveInsights,
-            status: 'error',
-            error: errorMessage,
-            updatedAt: new Date().toISOString(),
-          },
-          debug: {
-            ...current.debug,
-            liveAnalysis: [...current.debug.liveAnalysis.slice(-19), {
-              provider: state.lastProvider ?? 'gemini',
-              model: state.lastModel ?? AI_CONFIG.models.fast,
-              updatedAt: new Date().toISOString(),
-              error: errorMessage,
-            }],
-          },
-        }));
+      console.warn('[LiveInsights]', error instanceof Error ? error.message : error);
     } finally {
       state.inFlight = false;
-      const nextSession = this.getSession(meetingId);
-      if (nextSession && nextSession.transcriptEntries.length > state.lastAnalyzedCount) {
-        this.notifyTranscriptUpdated(meetingId);
-      }
     }
   }
 }
 
-function selectLiveInsightsProvider() {
-  return {
-    provider: 'gemini',
-    model: AI_CONFIG.models.fast,
-  };
-}
-
-function buildJargonInsights(previousItems = [], nextItems = [], updatedAt) {
-  const previousByKey = new Map(
-    previousItems.map((item) => [normalizeKey(item.term), item]),
-  );
-
-  const fresh = nextItems.map((item) => {
-    const previous = previousByKey.get(normalizeKey(item.term));
-    return {
-      id: previous?.id ?? createStableId('jargon', item.term),
-      term: item.term,
-      explanation: item.explanation,
-      detectedAt: previous?.detectedAt ?? updatedAt,
-      lastSeenAt: updatedAt,
-    };
-  });
-  return mergeKeep(fresh, previousItems, (item) => normalizeKey(item.term), AI_CONFIG.liveJargonKeep);
-}
-
-function buildLiveQuestions(previousItems = [], nextItems = [], updatedAt) {
-  const previousByKey = new Map(
-    previousItems.map((item) => [normalizeKey(item.text), item]),
-  );
-  const now = Date.parse(updatedAt);
-  const questions = [];
-
-  for (const item of nextItems) {
-    const text = item.text.trim();
-    if (!text) continue;
-
-    const previous = previousByKey.get(normalizeKey(text));
-    const partial = isLikelyPartialQuestion(text);
-    const partialSince = partial ? (previous?.partialSince ?? updatedAt) : null;
-
-    if (
-      partial
-      && partialSince
-      && now - Date.parse(partialSince) >= AI_CONFIG.liveQuestionPartialTtlMs
-    ) {
-      continue;
-    }
-
-    questions.push({
-      id: previous?.id ?? createStableId('question', text),
-      text,
-      createdAt: previous?.createdAt ?? updatedAt,
-      lastSeenAt: updatedAt,
-      partial,
-      partialSince,
-    });
-
+function keep(fresh, previous = [], keyOf, limit) {
+  const seen = new Set();
+  const out = [];
+  for (const item of [...fresh, ...previous]) {
+    const key = String(keyOf(item) ?? '').trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push({ ...item, id: item.id ?? `i-${hash(key)}` });
   }
-
-  // Keep earlier complete questions; drop stale half-heard ones.
-  const carried = previousItems.filter((item) => !item.partial
-    || now - Date.parse(item.partialSince ?? item.createdAt) < AI_CONFIG.liveQuestionPartialTtlMs);
-  return mergeKeep(questions, carried, (item) => normalizeKey(item.text), AI_CONFIG.liveQuestionKeep);
+  return out.slice(0, limit);
 }
 
-function buildSuggestions(previousItems = [], nextItems = [], updatedAt) {
-  const previousByKey = new Map(
-    previousItems.map((item) => [normalizeKey(`${item.type}:${item.text}`), item]),
-  );
-
-  const fresh = nextItems.map((item) => {
-    const previous = previousByKey.get(normalizeKey(`${item.type}:${item.text}`));
-    return {
-      id: previous?.id ?? createStableId('suggestion', `${item.type}:${item.text}`),
-      text: item.text,
-      type: item.type,
-      createdAt: previous?.createdAt ?? updatedAt,
-      lastSeenAt: updatedAt,
-    };
-  });
-  return mergeKeep(fresh, previousItems, (item) => normalizeKey(`${item.type}:${item.text}`), AI_CONFIG.liveSuggestionKeep);
-}
-
-/** Newest results first, then earlier items not repeated this run, capped. */
-function mergeKeep(fresh, previous = [], keyOf, limit) {
-  const seen = new Set(fresh.map(keyOf));
-  const carried = previous.filter((item) => !seen.has(keyOf(item)));
-  return [...fresh, ...carried].slice(0, limit);
-}
-
-function isLikelyPartialQuestion(text) {
-  return !text.trim().endsWith('?');
-}
-
-function normalizeKey(text) {
-  return String(text || '').trim().replace(/\s+/g, ' ').toLowerCase();
-}
-
-function createStableId(prefix, value) {
-  const normalized = normalizeKey(value);
-  let hash = 0;
-
-  for (let index = 0; index < normalized.length; index += 1) {
-    hash = ((hash << 5) - hash) + normalized.charCodeAt(index);
-    hash |= 0;
-  }
-
-  return `${prefix}-${Math.abs(hash).toString(36)}`;
+function hash(text) {
+  let value = 0;
+  for (let index = 0; index < text.length; index += 1) value = ((value << 5) - value + text.charCodeAt(index)) | 0;
+  return Math.abs(value).toString(36);
 }

@@ -1,8 +1,8 @@
-import { initializeArtifactsFile, readArtifactsFile } from './artifactStore.js';
+import { initializeArtifactsFile } from './artifactStore.js';
 import { LiveInsightsCoordinator } from './liveInsights.js';
-import { generateMeetingHighlights } from './highlights.js';
 import { answerQuickLookQuestion } from './quickLook.js';
 
+/** AI during a live meeting: Quick Ask and (opt-in) auto-insights. */
 export class MeetingAiService {
   constructor({ getSession, emitToRenderer }) {
     this.getSession = getSession;
@@ -11,7 +11,6 @@ export class MeetingAiService {
       getSession,
       emitLiveInsights: (meetingId, payload) => {
         this.emitToRenderer('live-insights', { meetingId, payload });
-        this.emitArtifactsUpdated(meetingId);
       },
     });
   }
@@ -24,45 +23,20 @@ export class MeetingAiService {
       transcriptPath: session.transcriptPath,
       artifactsPath: session.artifactsPath,
     });
+  }
 
-    this.liveInsights.registerMeeting(session.meetingId);
+  /** Called when the meeting starts in (or switches to) Live mode. */
+  startLive(meetingId) {
+    this.liveInsights.start(meetingId);
   }
 
   unregisterMeeting(meetingId) {
     this.liveInsights.unregisterMeeting(meetingId);
   }
 
-  handleTranscriptEntry(meetingId) {
-    this.liveInsights.notifyTranscriptUpdated(meetingId);
-  }
-
-  async generateHighlights(meetingId) {
-    const session = this.getSession(meetingId);
-    if (!session) return null;
-    const artifacts = await generateMeetingHighlights(session);
-    this.emitArtifactsUpdated(meetingId, artifacts);
-    return artifacts;
-  }
-
   async answerQuickLook(meetingId, payload) {
     const session = this.getSession(meetingId);
-    if (!session) {
-      throw new Error('Meeting session not found for QuickLook');
-    }
-
+    if (!session) throw new Error('Quick Ask works while a Live meeting is recording.');
     return answerQuickLookQuestion(session, payload);
-  }
-
-  async getArtifactsForSession(meetingId) {
-    const session = this.getSession(meetingId);
-    if (!session) return null;
-    return readArtifactsFile(session.artifactsPath);
-  }
-
-  emitArtifactsUpdated(meetingId, payload = null) {
-    this.emitToRenderer('meeting-artifacts-updated', {
-      meetingId,
-      payload,
-    });
   }
 }

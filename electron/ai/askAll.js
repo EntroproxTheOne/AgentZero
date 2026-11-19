@@ -6,6 +6,7 @@ import { getDB } from '../db.js';
 import { readArtifactsFile } from './artifactStore.js';
 import { generateGeminiJson } from './providers/gemini.js';
 import { parseJsonText } from './schemas.js';
+import { extractionForPrompt } from './meetingAsk.js';
 import { buildMeetingContext } from '../workspace.js';
 
 const SUMMARY_BUDGET_CHARS = 160_000;
@@ -25,10 +26,12 @@ function score(questionTerms, text) {
   return total;
 }
 
-async function readTranscript(filePath) {
+async function readTranscript(filePath, meetingId) {
   try {
     const entries = JSON.parse(await fs.readFile(filePath, 'utf8'));
-    return Array.isArray(entries) ? entries.map((entry) => `${entry.speakerLabel ?? 'Speaker'}: ${entry.text}`).join('\n') : '';
+    return Array.isArray(entries)
+      ? entries.map((entry, index) => `[M${meetingId}:L${index + 1}] ${entry.speakerLabel ?? 'Speaker'}: ${entry.text}`).join('\n')
+      : '';
   } catch {
     return '';
   }
@@ -62,18 +65,18 @@ export async function askAcrossMeetings({ question, clientId = null, projectId =
   const records = [];
   for (const meeting of meetings) {
     const artifacts = await readArtifactsFile(meeting.artifacts_path);
+    // Each meeting's extraction is its record of truth (decisions with status and line evidence).
+    const extraction = artifacts?.extraction;
     const highlights = artifacts?.highlights ?? {};
-    const minutes = artifacts?.minutesOfMeeting?.content ?? null;
     const summary = [
       `### Meeting #${meeting.id}: ${meeting.title}`,
       `Date: ${dateLabel(meeting.start_time_ms)}${meeting.client_name ? ` · Client: ${meeting.client_name}` : ''}${meeting.project_name ? ` · Project: ${meeting.project_name}` : ''}`,
       meeting.agenda ? `Agenda: ${meeting.agenda}` : '',
-      highlights.summary ? `Summary: ${highlights.summary}` : '',
-      highlights.keyDiscussionPoints?.length ? `Key points: ${highlights.keyDiscussionPoints.join(' | ')}` : '',
-      minutes?.decisions?.length ? `Decisions: ${minutes.decisions.join(' | ')}` : '',
-      highlights.actionItems?.length ? `Action items: ${highlights.actionItems.join(' | ')}` : '',
+      extraction
+        ? `Record: ${JSON.stringify(extractionForPrompt(extraction))}`
+        : highlights.summary ? `Summary: ${highlights.summary}` : '',
     ].filter(Boolean).join('\n');
-    const transcript = await readTranscript(meeting.transcript_path);
+    const transcript = await readTranscript(meeting.transcript_path, meeting.id);
     records.push({ meeting, summary, transcript, relevance: score(questionTerms, `${meeting.title} ${summary} ${transcript}`) });
   }
 
@@ -105,12 +108,13 @@ export async function askAcrossMeetings({ question, clientId = null, projectId =
   const prompt = [
     'You answer questions about a business\'s past meetings, using only the meeting records below.',
     'Return valid JSON only, in this exact shape:',
-    '{"answer":"string","citations":[{"meetingId":number,"note":"string"}]}',
+    '{"answer":"string","citations":[{"meetingId":number,"lineId":number,"note":"string"}]}',
     '',
     'Rules:',
     '- Answer directly and concretely. Use short paragraphs or "- " bullets inside the answer string.',
     '- Mention which meeting each fact comes from by its title and date.',
-    '- citations: the meetings you used (meetingId is the number after "#"), most important first, with a few words on what each contributed.',
+    '- A meeting record\'s decisions marked "reversed" were changed later in that meeting: never give them as the outcome.',
+    '- citations: the meetings (meetingId is the number after "#") and, where a transcript line supports it, the line (lineId from [M#:L#]); most important first, with a few words each.',
     '- If the records do not contain the answer, say so plainly. Never invent facts, figures, dates or names.',
     '- When meetings disagree, say so and give the most recent position.',
     '',
@@ -125,9 +129,9 @@ export async function askAcrossMeetings({ question, clientId = null, projectId =
   ].join('\n');
 
   const response = await generateGeminiJson({
-    tier: 'fast',
+    tier: 'big',
     prompt,
-    maxOutputTokens: 4096,
+    maxOutputTokens: 8192,
     purpose: 'ask-all',
     context,
   });
@@ -135,7 +139,11 @@ export async function askAcrossMeetings({ question, clientId = null, projectId =
   const validIds = new Set(meetings.map((meeting) => meeting.id));
   const titles = new Map(meetings.map((meeting) => [meeting.id, { title: meeting.title, date: dateLabel(meeting.start_time_ms) }]));
   const citations = (Array.isArray(parsed?.citations) ? parsed.citations : [])
-    .map((citation) => ({ meetingId: Number(citation?.meetingId), note: String(citation?.note ?? '').slice(0, 200) }))
+    .map((citation) => ({
+      meetingId: Number(citation?.meetingId),
+      lineId: Number.isInteger(Number(citation?.lineId)) && Number(citation?.lineId) > 0 ? Number(citation.lineId) : null,
+      note: String(citation?.note ?? '').slice(0, 200),
+    }))
     .filter((citation) => validIds.has(citation.meetingId))
     .slice(0, 8)
     .map((citation) => ({ ...citation, ...titles.get(citation.meetingId) }));

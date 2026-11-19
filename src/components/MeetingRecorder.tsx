@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, Mic, MonitorSmartphone } from 'lucide-react';
 import ConsentModal from './ConsentModal';
-import type { CaptureChoice, CaptureControls, CaptureState } from './capture';
+import { levelBus, type CaptureChoice, type CaptureControls, type CaptureState } from './capture';
 import { EMPTY_CONTEXT, type MeetingContextValue } from './meetingContext';
-import type { CurrentMeetingInfo, RuntimeInfo } from '../types/meeting';
+import type { CurrentMeetingInfo, RecordingMode, RuntimeInfo } from '../types/meeting';
 
 interface WorkletAudioChunkMessage {
   type: 'audio-chunk';
@@ -44,7 +44,9 @@ export default function MeetingRecorder({
   const [noAppDetected, setNoAppDetected] = useState(false);
   const [capture, setCapture] = useState<CaptureChoice>({ microphone: true, computerSound: false, screenVideo: false });
   const [meetingContext, setMeetingContext] = useState<MeetingContextValue>(EMPTY_CONTEXT);
-  const [identifySpeakers, setIdentifySpeakers] = useState(false);
+  const [mode, setMode] = useState<RecordingMode>('notes');
+  // What the screen video shows: 'auto' = the meeting app's window if one is open, else the whole screen.
+  const [videoSource, setStartVideoSource] = useState('auto');
   const [runtimeInfo, setRuntimeInfo] = useState<RuntimeInfo | null>(null);
   const [recorderError, setRecorderError] = useState<string | null>(null);
 
@@ -60,6 +62,12 @@ export default function MeetingRecorder({
   const micGainRef = useRef<GainNode | null>(null);
   const sysGainRef = useRef<GainNode | null>(null);
   const sysSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const micAnalyserRef = useRef<AnalyserNode | null>(null);
+  const sysAnalyserRef = useRef<AnalyserNode | null>(null);
+  const levelTimerRef = useRef<number | null>(null);
+  const videoElRef = useRef<HTMLVideoElement | null>(null);
+  const drawTimerRef = useRef<number | null>(null);
+  const levelFramesRef = useRef<number[]>([]);
   const captureRef = useRef<CaptureState>({ microphone: false, computerSound: false, screenVideo: false, problem: null });
   const onCaptureChangeRef = useRef(onCaptureChange);
   onCaptureChangeRef.current = onCaptureChange;
@@ -108,7 +116,33 @@ export default function MeetingRecorder({
     return true;
   };
 
+  /**
+   * Switch the screen video mid-meeting. The recording's video track is a canvas
+   * that copies whichever source is current, so MediaRecorder never restarts and
+   * the result stays one file.
+   */
+  const setVideoSource = async (sourceId: string) => {
+    const video = videoElRef.current;
+    if (!video) return;
+    try {
+      const chosen = sourceId === 'auto' ? null : sourceId;
+      const stream = await getDisplayStream(chosen ? [] : detectedApps, chosen ?? 'auto', false);
+      const track = stream.getVideoTracks()[0];
+      if (!track) throw new Error('No video from that source');
+      const previous = video.srcObject as MediaStream | null;
+      video.srcObject = new MediaStream([track]);
+      await video.play().catch(() => {});
+      previous?.getVideoTracks().forEach((old) => { old.onended = null; old.stop(); });
+      track.onended = () => { void setVideoSource('screen'); };
+      publishCapture({ videoSource: sourceId, problem: null });
+    } catch (error) {
+      publishCapture({ problem: `Could not switch the video: ${error instanceof Error ? error.message : String(error)}` });
+    }
+  };
+
   const controls: CaptureControls = {
+    detectedApps,
+    setVideoSource: async (sourceId) => setVideoSource(sourceId === 'screen' ? await firstScreenId() : sourceId),
     setMicrophone: async (on) => {
       if (on) {
         await enableMicrophone();
@@ -130,7 +164,7 @@ export default function MeetingRecorder({
       }
       // Not captured yet: start a sound-only display capture now.
       try {
-        const stream = await getDisplayStream(detectedApps);
+        const stream = await getDisplayStream(detectedApps, 'auto');
         if (!captureRef.current.screenVideo) stream.getVideoTracks().forEach((track) => track.stop());
         extraStreamsRef.current.push(stream);
         attachComputerSound(stream);
@@ -185,12 +219,12 @@ export default function MeetingRecorder({
 
     try {
       const settings = await window.electronAPI?.getAppSettings();
-      // Settings toggle is only the default; the consent dialog picks per meeting.
-      setIdentifySpeakers(Boolean(settings?.diarizationEnabled));
+      // Settings holds the default mode; the start sheet picks per meeting.
+      setMode(settings?.recordingMode === 'live' ? 'live' : 'notes');
       const apps = await window.electronAPI.detectMeetingApps().catch(() => [] as string[]);
       setDetectedApps(apps);
-      // Defaults: call sound when a meeting app is open; video from Settings.
-      setCapture({ microphone: true, computerSound: apps.length > 0, screenVideo: Boolean(settings?.screenRecordingEnabled) });
+      // Online meeting (computer sound on) unless no meeting app is open; video from Settings.
+      setCapture({ microphone: true, computerSound: true, screenVideo: Boolean(settings?.screenRecordingEnabled) });
       titleRef.current = apps.length > 0 ? `${apps[0]} Meeting` : 'Untitled Meeting';
     } catch {
       setDetectedApps([]);
@@ -226,7 +260,7 @@ export default function MeetingRecorder({
         clientId: meetingContext.clientId,
         projectId: meetingContext.projectId,
         agenda: meetingContext.agenda,
-        diarize: identifySpeakers,
+        mode,
       });
       meetingInfoRef.current = {
         meetingId: meetingInfo.meetingId,
@@ -237,6 +271,7 @@ export default function MeetingRecorder({
         startTime: meetingInfo.startTime,
         recordScreen: meetingInfo.recordScreen,
         meetingFolder: meetingInfo.meetingFolder,
+        mode: meetingInfo.mode,
       };
 
       // Every source goes through one mixer, with a switch (gain) per source, so
@@ -256,13 +291,22 @@ export default function MeetingRecorder({
       sysGain.connect(destination);
       micGainRef.current = micGain;
       sysGainRef.current = sysGain;
+      // The two sources are also measured separately (who spoke: mic vs call audio).
+      const micAnalyser = mixCtx.createAnalyser();
+      const sysAnalyser = mixCtx.createAnalyser();
+      micAnalyser.fftSize = 2048;
+      sysAnalyser.fftSize = 2048;
+      micGain.connect(micAnalyser);
+      sysGain.connect(sysAnalyser);
+      micAnalyserRef.current = micAnalyser;
+      sysAnalyserRef.current = sysAnalyser;
       captureRef.current = { microphone: false, computerSound: false, screenVideo: recordScreen, problem: null };
 
       if (capture.microphone) await enableMicrophone();
 
       // Computer sound and screen video both come from the display capture.
       const displayStream = meetingInfo.recordScreen || wantComputerSound
-        ? await getDisplayStream(detectedApps)
+        ? await getDisplayStream(detectedApps, videoSource)
         : null;
       displayStreamRef.current = displayStream;
       if (displayStream && !meetingInfo.recordScreen) {
@@ -277,7 +321,7 @@ export default function MeetingRecorder({
       const meetingAudio = destination.stream;
       const recordingStream = displayStream && meetingInfo.recordScreen
         ? new MediaStream([
-          ...displayStream.getVideoTracks(),
+          startVideoCompositor(displayStream.getVideoTracks()[0]),
           ...meetingAudio.getAudioTracks(),
         ])
         : meetingAudio;
@@ -327,18 +371,21 @@ export default function MeetingRecorder({
       }
 
       await startPcmPipeline(meetingAudio, meetingInfoRef.current.meetingId);
+      startLevelMeter(meetingInfoRef.current.meetingId);
 
       setIsRecording(true);
       onRecordingStarted?.(recordingStream, stopRecording, titleRef.current, meetingInfoRef.current, controls);
       publishCapture({});
 
+      // The shared window closed (e.g. the call ended): keep recording the whole screen.
       const displayVideoTrack = meetingInfo.recordScreen ? displayStream?.getVideoTracks()[0] : undefined;
       if (displayVideoTrack) {
         displayVideoTrack.onended = () => {
-          window.electronAPI?.log('warn', 'Display stream track ended naturally');
-          void stopRecording();
+          window.electronAPI?.log('warn', 'Shared window closed; switching the video to the whole screen');
+          void controls.setVideoSource('screen');
         };
       }
+      publishCapture({ videoSource: meetingInfo.recordScreen ? videoSource : undefined });
     } catch (caughtError) {
       const message = caughtError instanceof Error ? caughtError.message : String(caughtError);
       window.electronAPI?.log('error', 'Error in startRecording:', message);
@@ -413,6 +460,68 @@ export default function MeetingRecorder({
     };
   };
 
+  /** Copies the current video source into a fixed-size canvas; the canvas track is what gets recorded. */
+  const startVideoCompositor = (track: MediaStreamTrack) => {
+    const settings = track.getSettings();
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.min(1920, settings.width || 1280);
+    canvas.height = Math.min(1080, settings.height || 720);
+    const ctx = canvas.getContext('2d');
+    const video = document.createElement('video');
+    video.muted = true;
+    video.playsInline = true;
+    video.srcObject = new MediaStream([track]);
+    void video.play().catch(() => {});
+    videoElRef.current = video;
+    const draw = () => {
+      if (!ctx || video.readyState < 2) return;
+      const scale = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight) || 1;
+      const w = video.videoWidth * scale;
+      const h = video.videoHeight * scale;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(video, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    };
+    drawTimerRef.current = window.setInterval(draw, 1000 / 15);
+    return canvas.captureStream(15).getVideoTracks()[0];
+  };
+
+  /** Every 100 ms: mic and computer-sound loudness, sent to main in 1 s batches. */
+  const startLevelMeter = (meetingId: number) => {
+    const startEpoch = Date.now();
+    const buffer = new Float32Array(2048);
+    const rms = (analyser: AnalyserNode | null) => {
+      if (!analyser) return 0;
+      analyser.getFloatTimeDomainData(buffer);
+      let sum = 0;
+      for (let index = 0; index < buffer.length; index += 1) sum += buffer[index] * buffer[index];
+      return Math.sqrt(sum / buffer.length);
+    };
+    levelFramesRef.current = [];
+    levelTimerRef.current = window.setInterval(() => {
+      const mic = rms(micAnalyserRef.current);
+      const system = rms(sysAnalyserRef.current);
+      levelBus.publish({ mic, system });
+      levelFramesRef.current.push(Date.now() - startEpoch, mic, system);
+      if (levelFramesRef.current.length >= 30) {
+        window.electronAPI?.sendCaptureLevels(meetingId, startEpoch, levelFramesRef.current);
+        levelFramesRef.current = [];
+      }
+    }, 100);
+    levelStartEpochRef.current = startEpoch;
+  };
+  const levelStartEpochRef = useRef(0);
+
+  const stopLevelMeter = (meetingId: number | undefined) => {
+    if (levelTimerRef.current !== null) window.clearInterval(levelTimerRef.current);
+    levelTimerRef.current = null;
+    if (meetingId && levelFramesRef.current.length) {
+      window.electronAPI?.sendCaptureLevels(meetingId, levelStartEpochRef.current, levelFramesRef.current);
+    }
+    levelFramesRef.current = [];
+    levelBus.publish({ mic: 0, system: 0 });
+  };
+
   const flushPcmPipeline = async () => {
     const workletNode = workletNodeRef.current;
     if (!workletNode) return;
@@ -450,6 +559,11 @@ export default function MeetingRecorder({
       mediaRecorderRef.current = null;
     }
     await flushPcmPipeline().catch(() => {});
+    stopLevelMeter(meetingId);
+    if (drawTimerRef.current !== null) window.clearInterval(drawTimerRef.current);
+    drawTimerRef.current = null;
+    (videoElRef.current?.srcObject as MediaStream | null)?.getTracks().forEach((track) => { track.onended = null; track.stop(); });
+    videoElRef.current = null;
 
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
     recordingStreamRef.current = null;
@@ -460,6 +574,8 @@ export default function MeetingRecorder({
     extraStreamsRef.current.forEach((stream) => stream.getTracks().forEach((track) => track.stop()));
     extraStreamsRef.current = [];
     sysSourceRef.current = null;
+    micAnalyserRef.current = null;
+    sysAnalyserRef.current = null;
     micGainRef.current = null;
     sysGainRef.current = null;
 
@@ -526,8 +642,10 @@ export default function MeetingRecorder({
           onCaptureChange={setCapture}
           context={meetingContext}
           onContextChange={setMeetingContext}
-          identifySpeakers={identifySpeakers}
-          onIdentifySpeakersChange={setIdentifySpeakers}
+          mode={mode}
+          onModeChange={setMode}
+          videoSource={videoSource}
+          onVideoSourceChange={setStartVideoSource}
           onAccept={handleConsentAccept}
           onCancel={handleConsentCancel}
         />
@@ -569,17 +687,23 @@ export default function MeetingRecorder({
       </button>
 
       <p className="recorder-hint">
-        Click to start. You will choose In person (microphone only, no video) or Online (adds screen video) before recording begins.
+        Click to start. You choose Online or In person, and Notes or Live, before recording begins.
       </p>
     </div>
   );
 }
 
-async function getDisplayStream(detectedApps: string[]) {
-  // Point the main process at the meeting app's window when one is open; the
-  // request handler there adds system audio ('loopback') to the capture.
-  let sourceId: string | null = null;
-  if (window.electronAPI && detectedApps.length > 0) {
+async function firstScreenId() {
+  const sources = await window.electronAPI.getDesktopSources().catch(() => []);
+  return sources.find((source) => source.id.startsWith('screen:'))?.id ?? 'auto';
+}
+
+async function getDisplayStream(detectedApps: string[], chosenSource: string, withAudio = true) {
+  // A source picked in the start sheet wins; 'auto' points at the meeting app's
+  // window when one is open, else the whole screen. The request handler in main
+  // adds system audio ('loopback') whatever the video source is.
+  let sourceId: string | null = chosenSource !== 'auto' ? chosenSource : null;
+  if (!sourceId && window.electronAPI && detectedApps.length > 0) {
     try {
       const sources = await window.electronAPI.getDesktopSources();
       const match = sources.find((source) => {
@@ -597,5 +721,5 @@ async function getDisplayStream(detectedApps: string[]) {
     }
   }
   await window.electronAPI?.setCaptureSource(sourceId);
-  return navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  return navigator.mediaDevices.getDisplayMedia({ video: true, audio: withAudio });
 }

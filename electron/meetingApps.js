@@ -33,15 +33,52 @@ const BROWSER_TITLE_KEYWORDS = [
   { keyword: 'Webex', name: 'Webex' },
 ];
 
+// macOS: app process names, plus window titles (browser meetings, e.g. "Meet - abc-defg-hij"
+// in Safari or Chrome). Window titles need Screen Recording permission; without it
+// only the native apps are found.
+const MAC_APPS = [
+  { name: 'Zoom', match: /(^|\/)zoom\.us$/i },
+  { name: 'Microsoft Teams', match: /(^|\/)(MSTeams|Microsoft Teams( \(work or school\))?)$/i },
+  { name: 'Cisco Webex', match: /(^|\/)(Webex|Cisco Webex Meetings)$/i },
+  { name: 'Slack', match: /(^|\/)Slack$/i },
+  { name: 'FaceTime', match: /(^|\/)FaceTime$/i },
+  { name: 'Discord', match: /(^|\/)Discord$/i },
+  { name: 'Skype', match: /(^|\/)Skype$/i },
+];
+
+async function detectMacMeetingApps() {
+  const detected = [];
+  try {
+    const { stdout } = await execAsync('ps -axo comm=', { maxBuffer: 4 * 1024 * 1024 });
+    const names = stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+    for (const app of MAC_APPS) {
+      if (names.some((name) => app.match.test(name))) detected.push(app.name);
+    }
+  } catch (error) {
+    console.warn('[MeetingApps] ps failed:', error.message);
+  }
+  try {
+    const { desktopCapturer } = await import('electron');
+    const windows = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 0, height: 0 } });
+    for (const win of windows) {
+      for (const kw of BROWSER_TITLE_KEYWORDS) {
+        if (win.name.includes(kw.keyword) && !detected.some((name) => name.startsWith(kw.name))) {
+          detected.push(`${kw.name} (browser)`);
+        }
+      }
+    }
+  } catch {
+    // No Screen Recording permission yet: native apps only.
+  }
+  return detected;
+}
+
 /**
  * Detect running meeting applications.
  * Returns array of detected app names (e.g. ['Zoom'], ['Google Meet (Chrome)'], or []).
  */
 export async function detectMeetingApps() {
-  if (process.platform === 'darwin') {
-    // macOS test builds fall back to the native picker instead of process/window detection.
-    return [];
-  }
+  if (process.platform === 'darwin') return detectMacMeetingApps();
 
   const detected = [];
 

@@ -9,13 +9,14 @@ function getProviderFactory() {
   return createSarvamSession;
 }
 
-export async function startTranscription(meetingId, { mainWindow, onFinalEntry }) {
+export async function startTranscription(meetingId, { mainWindow, onFinalEntry, labelEntry }) {
   if (sessions.has(meetingId)) return;
 
   const createSession = getProviderFactory();
   const session = await createSession(meetingId, {
     mainWindow,
     onFinalEntry,
+    labelEntry,
   });
 
   if (!session) {

@@ -3,19 +3,20 @@
 // State lives in the Meetings row (processing_state, processing_note,
 // batch_job_id) and in artifacts.json, so every step is idempotent and
 // `resumePendingMeetings()` on launch picks up wherever things stopped:
-//   1. Sarvam batch job (uploads always; live meetings when speaker detection is on)
-//      - submitted once; job_id stored; Sarvam keeps working while we're closed
-//   2. Highlights + Minutes of Meeting (started immediately at Stop)
-//   3. When the batch result lands: apply transcript/speaker labels, regenerate
+//   1. Notes mode / uploads: ONE Sarvam batch pass with diarization.
+//      Live mode: the streamed transcript is kept; the batch pass runs only if the
+//      stream had gaps or the user asks to improve speaker labels.
+//   2. Speaker mapping from the mic / computer-sound levels (no API cost).
+//   3. ONE extraction call over the full transcript -> highlights, minutes, Ask.
 import fs from 'fs/promises';
 import path from 'path';
 import { getDB } from './db.js';
 import { finalizeVideoMp4, pcmToMp3 } from './media.js';
 import { initializeArtifactsFile, readArtifactsFile, updateArtifactsFile } from './ai/artifactStore.js';
-import { generateMeetingHighlights } from './ai/highlights.js';
-import { ensureMinutesOfMeeting } from './ai/minutesOfMeeting.js';
+import { runExtraction } from './ai/extraction.js';
 import { submitBatchJob, waitForBatchJob } from './transcription/sarvamBatch.js';
 import { getMeetingContextForRow } from './workspace.js';
+import { applySpeakerNames, mapSpeakers, readLevels, remoteNameHint, systemWasSilent } from './speakers.js';
 
 let emitToRenderer = () => {};
 let onTranscriptReady = () => {};
@@ -31,14 +32,18 @@ export function configurePipeline({ emit, onTranscript, isLive }) {
   if (isLive) isLiveMeeting = isLive;
 }
 
-const getMeeting = (dbId) => getDB().prepare('SELECT * FROM Meetings WHERE id = ?').get(dbId);
+const getMeeting = (dbId) => getDB().prepare(`
+  SELECT m.*, c.name AS client_name FROM Meetings m LEFT JOIN Clients c ON c.id = m.client_id WHERE m.id = ?
+`).get(dbId);
+
+export const levelsPathFor = (meeting) => path.join(path.dirname(meeting.transcript_path || meeting.artifacts_path), 'levels.bin');
 
 function setState(dbId, state, note = null) {
   getDB().prepare('UPDATE Meetings SET processing_state = ?, processing_note = ? WHERE id = ?').run(state, note, dbId);
   emitToRenderer('meeting-processing', { dbId, state, note });
 }
 
-function emitArtifacts(meeting) {
+export function emitArtifacts(meeting) {
   emitToRenderer('meeting-artifacts-updated', { meetingId: meeting.start_time_ms, dbId: meeting.id, payload: null });
 }
 
@@ -51,7 +56,7 @@ async function readTranscript(meeting) {
   }
 }
 
-async function buildSession(meeting) {
+async function buildSession(meeting, artifacts) {
   return {
     meetingId: meeting.start_time_ms,
     dbId: meeting.id,
@@ -62,15 +67,56 @@ async function buildSession(meeting) {
     transcriptPath: meeting.transcript_path,
     artifactsPath: meeting.artifacts_path,
     contextText: getMeetingContextForRow(meeting).text,
+    ownerName: meeting.owner_name || 'You',
+    oneSided: Boolean(artifacts?.speakerMap?.oneSided),
   };
 }
 
-// Batch transcription runs for uploads, for speaker detection, and as the fallback
-// whenever a live meeting ended up with no transcript (STT outage, crash, quit).
+// One batch pass, always with diarization: every upload and Notes-mode
+// recording; Live mode only when the stream had gaps or the user asked for it.
 function needsBatch(meeting, artifacts, transcriptEmpty) {
   if (artifacts?.usage?.sttBatch) return false;
-  const liveIncomplete = transcriptEmpty || Boolean(artifacts?.usage?.stt?.incomplete);
-  return meeting.source === 'upload' || Boolean(meeting.batch_diarize) || (liveIncomplete && Boolean(meeting.audio_file_path));
+  if (meeting.source === 'upload' || meeting.recording_mode !== 'live') return true;
+  return Boolean(meeting.batch_diarize) || transcriptEmpty || Boolean(artifacts?.usage?.stt?.incomplete);
+}
+
+/** Label diarized speakers from the two capture tracks and save the result. */
+export async function mapMeetingSpeakers(meeting, entries) {
+  const frames = await readLevels(levelsPathFor(meeting));
+  const map = mapSpeakers({
+    entries,
+    frames,
+    ownerName: meeting.owner_name || 'You',
+    remoteHint: remoteNameHint({ clientName: meeting.client_name, title: meeting.title }),
+  });
+  const labelled = applySpeakerNames(entries, map.speakers);
+  await fs.writeFile(meeting.transcript_path, JSON.stringify(labelled, null, 2), 'utf8');
+  await updateArtifactsFile(meeting.artifacts_path, (current) => ({
+    ...current,
+    speakerMap: { ...map, mode: 'diarized', hadLevels: frames.length > 0, confirmed: false, updatedAt: new Date().toISOString() },
+  }));
+  return labelled;
+}
+
+/** Live mode: the stream was labelled You / Client as it went; summarise how sure that was. */
+async function summariseLiveSpeakers(meeting, entries) {
+  const frames = await readLevels(levelsPathFor(meeting));
+  const unclear = entries.filter((entry) => entry.liveSide === null || entry.liveSide === undefined).length;
+  const unclearShare = entries.length ? unclear / entries.length : 1;
+  const names = [...new Set(entries.map((entry) => entry.speakerLabel))];
+  await updateArtifactsFile(meeting.artifacts_path, (current) => ({
+    ...current,
+    speakerMap: {
+      mode: 'live',
+      oneSided: frames.length > 0 && systemWasSilent(frames),
+      names,
+      unclearShare: Math.round(unclearShare * 100) / 100,
+      // Many utterances the levels could not place: offer the diarization pass.
+      needsImprove: unclearShare > 0.2,
+      confidence: Math.round((1 - unclearShare) * 100) / 100,
+      updatedAt: new Date().toISOString(),
+    },
+  }));
 }
 
 async function fileSize(filePath) {
@@ -158,14 +204,14 @@ async function submitIfNeeded(meeting, artifacts, transcriptEmpty) {
     }));
     return getMeeting(meeting.id);
   }
-  setState(meeting.id, 'transcribing', meeting.batch_diarize ? 'Uploading audio for speaker detection' : 'Uploading recording');
-  const jobId = await submitBatchJob(meeting.audio_file_path, { diarize: Boolean(meeting.batch_diarize) });
+  setState(meeting.id, 'transcribing', 'Uploading audio');
+  const jobId = await submitBatchJob(meeting.audio_file_path, { diarize: true });
   getDB().prepare('UPDATE Meetings SET batch_job_id = ? WHERE id = ?').run(jobId, meeting.id);
   return getMeeting(meeting.id);
 }
 
-async function applyBatchResult(meeting, { regenerate }) {
-  setState(meeting.id, 'transcribing', meeting.batch_diarize ? 'Identifying speakers' : 'Transcribing recording');
+async function applyBatchResult(meeting) {
+  setState(meeting.id, 'transcribing', 'Transcribing and identifying speakers');
   let result;
   try {
     result = await waitForBatchJob(meeting.batch_job_id, {
@@ -177,42 +223,35 @@ async function applyBatchResult(meeting, { regenerate }) {
     if (!isTransient(error)) getDB().prepare('UPDATE Meetings SET batch_job_id = NULL WHERE id = ?').run(meeting.id);
     throw error;
   }
-  if (result.entries.length > 0) {
-    await fs.writeFile(meeting.transcript_path, JSON.stringify(result.entries, null, 2), 'utf8');
+  let entries = result.entries;
+  if (entries.length > 0) {
+    setState(meeting.id, 'transcribing', 'Matching speakers');
+    entries = await mapMeetingSpeakers(meeting, entries);
   }
   const billedAudioSeconds = meeting.start_time_ms && meeting.end_time_ms
     ? (meeting.end_time_ms - meeting.start_time_ms) / 1000
     : result.durationSeconds ?? 0;
-  // Recorded together with the batch result, so a quit before regeneration
-  // finishes is picked up on the next launch (see `regenerationPending` in run()).
   await updateArtifactsFile(meeting.artifacts_path, (current) => ({
     ...current,
-    regenerationPending: Boolean(regenerate && result.entries.length > 0) || Boolean(current.regenerationPending),
+    // A new transcript makes any earlier record out of date.
+    extractionStale: Boolean(current.extraction) && entries.length > 0 ? true : Boolean(current.extractionStale),
     usage: {
       ...(current.usage ?? {}),
-      sttBatch: { diarized: Boolean(meeting.batch_diarize), billedAudioSeconds, jobId: result.jobId },
+      sttBatch: { diarized: true, billedAudioSeconds, jobId: result.jobId },
     },
   }));
   getDB().prepare('UPDATE Meetings SET batch_job_id = NULL WHERE id = ?').run(meeting.id);
   const updated = getMeeting(meeting.id);
-  onTranscriptReady(updated, result.entries);
+  onTranscriptReady(updated, entries);
   emitArtifacts(updated);
   return updated;
 }
 
-async function regenerateIfPending(meeting) {
-  const artifacts = await readArtifactsFile(meeting.artifacts_path);
-  if (!artifacts?.regenerationPending) return;
-  // Speaker labels changed the transcript: refresh highlights and minutes.
-  setState(meeting.id, 'analyzing', 'Updating minutes with speaker names');
-  const session = await buildSession(meeting);
-  await generateMeetingHighlights(session);
-  await ensureMinutesOfMeeting(session, { force: true }).catch(() => null);
-  const after = await readArtifactsFile(meeting.artifacts_path);
-  if (after?.highlights?.status === 'ready' && after?.minutesOfMeeting?.status === 'ready' && after.minutesOfMeeting.source !== 'fallback') {
-    await updateArtifactsFile(meeting.artifacts_path, (current) => ({ ...current, regenerationPending: false }));
-  }
-  emitArtifacts(meeting);
+function useExtractedTitle(meeting, extraction) {
+  const title = extraction?.title?.trim();
+  if (!title || meeting.title !== 'Untitled Meeting') return;
+  getDB().prepare('UPDATE Meetings SET title = ? WHERE id = ?').run(title, meeting.id);
+  emitToRenderer('meeting-title-updated', { dbId: meeting.id, title });
 }
 
 async function run(dbId) {
@@ -223,6 +262,7 @@ async function run(dbId) {
       if (isLiveMeeting(dbId)) return; // still being recorded right now
       meeting = await recoverInterruptedRecording(meeting);
       if (meeting.processing_state === 'error') return;
+      meeting = getMeeting(dbId);
     }
     await initializeArtifactsFile(meeting.artifacts_path, {
       meetingId: meeting.start_time_ms,
@@ -233,50 +273,27 @@ async function run(dbId) {
     });
     let artifacts = await readArtifactsFile(meeting.artifacts_path);
     const transcriptEmpty = (await readTranscript(meeting)).length === 0;
-    meeting = await submitIfNeeded(meeting, artifacts, transcriptEmpty);
 
-    // Uploads, recovered recordings and live transcripts with gaps are rebuilt
-    // from the recording first, so the minutes are never written from a partial transcript.
-    const liveIncomplete = Boolean(artifacts?.usage?.stt?.incomplete);
-    if (meeting.batch_job_id && (liveIncomplete || (await readTranscript(meeting)).length === 0)) {
-      meeting = await applyBatchResult(meeting, { regenerate: false });
+    if (needsBatch(meeting, artifacts, transcriptEmpty)) {
+      meeting = await submitIfNeeded(meeting, artifacts, transcriptEmpty);
+      if (meeting.batch_job_id) meeting = await applyBatchResult(meeting);
+    } else if (!artifacts?.speakerMap && !transcriptEmpty) {
+      await summariseLiveSpeakers(meeting, await readTranscript(meeting));
     }
 
-    // Highlights + minutes (skipped when already done).
-    let session = await buildSession(meeting);
+    artifacts = await readArtifactsFile(meeting.artifacts_path);
+    const session = await buildSession(meeting, artifacts);
     if (session.transcriptEntries.length === 0) {
       setState(dbId, 'done', 'No speech was transcribed');
       return;
     }
-    artifacts = await readArtifactsFile(meeting.artifacts_path);
-    if (artifacts?.highlights?.status !== 'ready') {
-      setState(dbId, 'analyzing', 'Writing highlights');
-      await generateMeetingHighlights(session);
-      emitArtifacts(meeting);
-    }
-    artifacts = await readArtifactsFile(meeting.artifacts_path);
-    if (artifacts?.minutesOfMeeting?.status !== 'ready' || artifacts.minutesOfMeeting.source === 'fallback') {
-      setState(dbId, 'analyzing', 'Writing minutes of meeting');
-      await ensureMinutesOfMeeting(session).catch(() => null);
+    if (artifacts?.extraction?.status !== 'ready' || artifacts?.extractionStale) {
+      setState(dbId, 'analyzing', 'Writing the meeting record');
+      const updated = await runExtraction(session);
+      useExtractedTitle(meeting, updated?.extraction);
       emitArtifacts(meeting);
     }
 
-    // Live meeting with speaker detection: labels arrive after the first pass.
-    meeting = getMeeting(dbId);
-    if (meeting.batch_job_id) {
-      meeting = await applyBatchResult(meeting, { regenerate: true });
-    }
-    await regenerateIfPending(meeting);
-
-    artifacts = await readArtifactsFile(meeting.artifacts_path);
-    const unfinished = artifacts?.highlights?.status !== 'ready'
-      || artifacts?.minutesOfMeeting?.status !== 'ready'
-      || artifacts.minutesOfMeeting.source === 'fallback'
-      || Boolean(artifacts?.regenerationPending);
-    if (unfinished) {
-      const reason = artifacts?.highlights?.error || artifacts?.minutesOfMeeting?.error || 'AI step did not finish';
-      throw Object.assign(new Error(reason), { permanent: !isTransient(new Error(reason)) });
-    }
     attempts.delete(dbId);
     setState(dbId, 'done', null);
   } catch (error) {

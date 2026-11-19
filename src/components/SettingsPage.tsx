@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { User, Folder, Palette, Info, Save, Languages, Monitor, KeyRound, ShieldCheck } from 'lucide-react';
-import type { AiConnectionTestResult, AppSettings, AppUser, CredentialsStatus } from '../types/meeting';
+import type { AiConnectionTestResult, AppSettings, AppUser, CredentialsStatus, RecordingMode } from '../types/meeting';
+import TemplatesSettings from './TemplatesSettings';
 import AccountsSettings from './AccountsSettings';
 import MacPermissions from './MacPermissions';
 import { getThemeChoice, setThemeChoice, type ThemeChoice } from '../theme';
@@ -31,9 +32,11 @@ export default function SettingsPage({ user, onUserUpdated, onSignedOut, onShowW
   const [credsMessage, setCredsMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
   const [testResult, setTestResult] = useState<AiConnectionTestResult | null>(null);
   const [testing, setTesting] = useState(false);
+  const [rates, setRates] = useState({ notes: 35.4, live: 29.4 });
 
   useEffect(() => {
     if (!window.electronAPI) return;
+    void window.electronAPI.getCostRates?.().then((r) => setRates({ notes: r.notesTranscriptionInr, live: r.liveTranscriptionInr })).catch(() => {});
     void window.electronAPI.getAppSettings().then(setSettings).catch((error) => {
       console.error('Failed to load app settings:', error);
     });
@@ -91,7 +94,7 @@ export default function SettingsPage({ user, onUserUpdated, onSignedOut, onShowW
     }
   };
 
-  const handleToggle = async (patch: { showCost?: boolean; webSearchEnabled?: boolean; liveInsightsEnabled?: boolean; diarizationEnabled?: boolean }) => {
+  const handleToggle = async (patch: { showCost?: boolean; webSearchEnabled?: boolean; recordingMode?: RecordingMode; autoInsightsMinutes?: number }) => {
     if (!window.electronAPI) return;
     setSettings(await window.electronAPI.updateAppSettings(patch));
     setSettingsSaved(true);
@@ -116,6 +119,7 @@ export default function SettingsPage({ user, onUserUpdated, onSignedOut, onShowW
       <div className="settings-grid">
         <MacPermissions variant="card" />
         <AccountsSettings user={user} onUserUpdated={onUserUpdated} onSignedOut={onSignedOut} />
+        <TemplatesSettings />
 
         <div className="settings-card">
           <div className="settings-card-header">
@@ -132,7 +136,7 @@ export default function SettingsPage({ user, onUserUpdated, onSignedOut, onShowW
                   style={{ flex: 1 }}
                   value={listenerName}
                   onChange={(e) => setListenerName(e.target.value)}
-                  placeholder="Name to detect in meetings"
+                  placeholder="Your name in transcripts"
                 />
                 <button className="setting-save-btn" onClick={handleSaveListener}>
                   {saved ? '✓ Saved' : <><Save size={14} /> Save</>}
@@ -194,7 +198,7 @@ export default function SettingsPage({ user, onUserUpdated, onSignedOut, onShowW
                 <div>
                   <div className="settings-toggle-title">Screen video by default</div>
                   <div className="settings-toggle-sub">
-                    Pre-selects “Screen video” when you start a meeting. You can still change it each time. Computer sound is switched on automatically when a meeting app is open.
+                    Pre-selects “Screen video” when you start a meeting. You can still change it each time.
                   </div>
                 </div>
                 <button
@@ -214,42 +218,40 @@ export default function SettingsPage({ user, onUserUpdated, onSignedOut, onShowW
         <div className="settings-card">
           <div className="settings-card-header">
             <ShieldCheck size={18} className="settings-card-icon" />
-            <h4 className="settings-card-title">Privacy &amp; Cost</h4>
+            <h4 className="settings-card-title">Meetings &amp; Cost</h4>
           </div>
           <div className="settings-card-body">
-            <label className="settings-toggle-row">
-              <div>
-                <div className="settings-toggle-title">Live insights</div>
-                <div className="settings-toggle-sub">Questions, jargon and suggestions during the meeting, refreshed every 30 seconds. When off, meetings are still recorded and transcribed live, and highlights and minutes are still written afterwards.</div>
-              </div>
-              <button
-                type="button"
-                className={`settings-toggle ${settings?.liveInsightsEnabled ? 'settings-toggle-on' : ''}`}
-                onClick={() => void handleToggle({ liveInsightsEnabled: !settings?.liveInsightsEnabled })}
-                aria-pressed={settings?.liveInsightsEnabled ?? true}
-                aria-label="Live insights"
+            <div className="setting-row">
+              <label className="setting-label" htmlFor="default-mode">Default recording mode</label>
+              <select
+                id="default-mode"
+                className="setting-input"
+                value={settings?.recordingMode ?? 'notes'}
+                onChange={(e) => void handleToggle({ recordingMode: e.target.value as RecordingMode })}
               >
-                <span className="settings-toggle-knob" />
-              </button>
-            </label>
-            <label className="settings-toggle-row">
-              <div>
-                <div className="settings-toggle-title">
-                  Identify speakers
-                  <span className="settings-provider-meta settings-provider-meta-plain">+₹0.10/min</span>
-                </div>
-                <div className="settings-toggle-sub">After each meeting, the recorded audio is sent once more to Sarvam to label who said what (Speaker 1, Speaker 2…), then the minutes are updated. Also the default for uploaded recordings.</div>
+                <option value="notes">Notes: transcript, speakers and summary after the meeting</option>
+                <option value="live">Live: live transcript (You / Client) and Quick Ask</option>
+              </select>
+              <div className="settings-toggle-sub">
+                Notes: ₹{rates.notes.toFixed(1)}/hour transcription with speaker labels (one pass after the meeting), plus about ₹1–3 of AI for the summary.
+                Live: ₹{rates.live.toFixed(1)}/hour, You / Client labels only; better speaker labels can be added afterwards for ₹{rates.notes.toFixed(1)}/hour.
               </div>
-              <button
-                type="button"
-                className={`settings-toggle ${settings?.diarizationEnabled ? 'settings-toggle-on' : ''}`}
-                onClick={() => void handleToggle({ diarizationEnabled: !settings?.diarizationEnabled })}
-                aria-pressed={settings?.diarizationEnabled ?? false}
-                aria-label="Identify speakers"
+            </div>
+            <div className="setting-row">
+              <label className="setting-label" htmlFor="auto-insights">Advanced: live insights (Live mode only)</label>
+              <select
+                id="auto-insights"
+                className="setting-input"
+                value={settings?.autoInsightsMinutes ?? 0}
+                onChange={(e) => void handleToggle({ autoInsightsMinutes: Number(e.target.value) })}
               >
-                <span className="settings-toggle-knob" />
-              </button>
-            </label>
+                <option value={0}>Off</option>
+                <option value={2}>Every 2 minutes</option>
+                <option value={5}>Every 5 minutes</option>
+                <option value={10}>Every 10 minutes</option>
+              </select>
+              <div className="settings-toggle-sub">Questions, jargon and suggestions during a Live meeting. Each update sends only the new speech; at most 20 per meeting.</div>
+            </div>
             <label className="settings-toggle-row">
               <div>
                 <div className="settings-toggle-title">Show meeting cost</div>

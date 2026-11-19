@@ -38,18 +38,30 @@ export function computeMeetingCost({ artifacts, startTimeMs, endTimeMs }) {
     byPurpose[call.purpose] = (byPurpose[call.purpose] ?? 0) + usd + searches;
   }
 
-  // Prefer Sarvam's billed audio duration; fall back to wall-clock meeting length.
-  const billedSeconds = artifacts?.usage?.stt?.billedAudioSeconds;
-  const audioMinutes = typeof billedSeconds === 'number'
-    ? billedSeconds / 60
-    : startTimeMs && endTimeMs ? Math.max(0, (endTimeMs - startTimeMs) / 60000) : 0;
-  // Live (streaming) transcription; older meetings without usage records count wall-clock time.
-  const liveSttInr = (artifacts?.usage?.stt || !artifacts?.usage?.sttBatch) ? (audioMinutes / 60) * PRICING.sarvamSttInrPerHour : 0;
-  const batch = artifacts?.usage?.sttBatch;
+  // Live streaming only exists for Live-mode meetings (and meetings from older builds,
+  // which had no usage record at all: count wall-clock time for those).
+  const usage = artifacts?.usage ?? {};
+  const wallMinutes = startTimeMs && endTimeMs ? Math.max(0, (endTimeMs - startTimeMs) / 60000) : 0;
+  const liveMinutes = usage.stt
+    ? (typeof usage.stt.billedAudioSeconds === 'number' ? usage.stt.billedAudioSeconds / 60 : wallMinutes)
+    : (!usage.sttBatch ? wallMinutes : 0);
+  const liveSttInr = (liveMinutes / 60) * PRICING.sarvamSttInrPerHour;
+  const batch = usage.sttBatch;
   const batchMinutes = batch && !batch.skipped ? (batch.billedAudioSeconds ?? 0) / 60 : 0;
   const batchInr = (batchMinutes / 60) * (batch?.diarized ? PRICING.sarvamDiarizedInrPerHour : PRICING.sarvamSttInrPerHour);
-  const sttInr = liveSttInr + batchInr;
+  // "Go live" catch-up: earlier audio transcribed in batch without diarization.
+  const catchUpMinutes = (usage.sttCatchUp?.billedAudioSeconds ?? 0) / 60;
+  const catchUpInr = (catchUpMinutes / 60) * PRICING.sarvamSttInrPerHour;
+  const sttInr = liveSttInr + batchInr + catchUpInr;
   const totalInr = (aiUsd + searchUsd) * PRICING.usdToInr + sttInr;
+
+  const purposeInr = Object.fromEntries(Object.entries(byPurpose).map(([k, v]) => [k, v * PRICING.usdToInr]));
+  const sum = (keys) => keys.reduce((total, key) => total + (purposeInr[key] ?? 0), 0);
+  const notesKeys = ['extraction', 'highlights', 'minutes', 'minutes-repair', 'title'];
+  const askKeys = ['ask', 'template', 'quicklook', 'quicklook-web', 'ask-all'];
+  const liveKeys = ['live'];
+  const known = new Set([...notesKeys, ...askKeys, ...liveKeys]);
+  const otherInr = Object.entries(purposeInr).filter(([key]) => !known.has(key)).reduce((total, [, v]) => total + v, 0);
 
   return {
     totalInr,
@@ -59,11 +71,26 @@ export function computeMeetingCost({ artifacts, startTimeMs, endTimeMs }) {
     sttInr,
     batchInr,
     speakerDetection: Boolean(batch?.diarized),
-    audioMinutes: audioMinutes || batchMinutes,
+    audioMinutes: Math.max(liveMinutes, batchMinutes, wallMinutes),
     aiCalls: calls.length,
     inputTokens,
     outputTokens,
-    byPurposeInr: Object.fromEntries(Object.entries(byPurpose).map(([k, v]) => [k, v * PRICING.usdToInr])),
+    byPurposeInr: purposeInr,
+    // The three numbers the cost card shows.
+    breakdown: {
+      transcriptionInr: sttInr,
+      notesInr: sum(notesKeys) + otherInr,
+      askInr: sum(askKeys),
+      liveInsightsInr: sum(liveKeys),
+    },
     pricesVerified: allVerified,
+  };
+}
+
+/** Per-hour list prices for Settings. */
+export function perHourRates() {
+  return {
+    notesTranscriptionInr: PRICING.sarvamDiarizedInrPerHour,
+    liveTranscriptionInr: PRICING.sarvamSttInrPerHour,
   };
 }

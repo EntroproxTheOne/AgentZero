@@ -97,5 +97,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   offAccessState: () =>
     ipcRenderer.removeAllListeners('access-state'),
   askQuickLook: (data) => ipcRenderer.invoke('quicklook-ask', data),
+  // Two-track capture levels (speaker mapping) and Notes -> Live
+  sendCaptureLevels: (meetingId, startEpoch, frames) => ipcRenderer.send('capture-levels', { meetingId, startEpoch, frames }),
+  goLive: (data) => ipcRenderer.invoke('go-live', data),
+  // After the meeting
+  askMeeting: (data) => ipcRenderer.invoke('ask-meeting', data),
+  listTemplates: () => ipcRenderer.invoke('templates-list'),
+  saveTemplate: (data) => ipcRenderer.invoke('template-save', data),
+  deleteTemplate: (data) => ipcRenderer.invoke('template-delete', data),
+  runTemplate: (data) => ipcRenderer.invoke('template-run', data),
+  editMeetingItem: (data) => ipcRenderer.invoke('edit-meeting-item', data),
+  renameSpeaker: (data) => ipcRenderer.invoke('rename-speaker', data),
+  confirmOwner: (data) => ipcRenderer.invoke('confirm-owner', data),
+  reassignLine: (data) => ipcRenderer.invoke('reassign-line', data),
+  refreshMeetingRecord: (data) => ipcRenderer.invoke('refresh-meeting-record', data),
+  improveSpeakers: (data) => ipcRenderer.invoke('improve-speakers', data),
+  getCostRates: () => ipcRenderer.invoke('get-cost-rates'),
+  exportMeetingJson: (data) => ipcRenderer.invoke('export-meeting-json', data),
   log: (level, ...args) => ipcRenderer.send('log-from-renderer', level, ...args),
 });

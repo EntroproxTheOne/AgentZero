@@ -7,8 +7,6 @@ import LiveQuestions from './LiveQuestions';
 import type { QuestionItem } from './LiveQuestions';
 import LiveTranscript from './LiveTranscript';
 import QuickLookChat from './QuickLookChat';
-import TodoList from './TodoList';
-import type { TodoItem } from './TodoList';
 import type { LiveInsightsPayload } from '../types/meeting';
 
 interface BentoGridProps {
@@ -28,7 +26,11 @@ const emptyLiveInsights: LiveInsightsPayload = {
 export default function BentoGrid({ meetingId, listenerName }: BentoGridProps) {
   const [liveInsights, setLiveInsights] = useState<LiveInsightsPayload>(emptyLiveInsights);
   const [resolvedQuestionIds, setResolvedQuestionIds] = useState<string[]>([]);
-  const [todos, setTodos] = useState<TodoItem[]>([]);
+  // Auto-insights are opt-in (Settings, Live mode only); without them only the transcript and Quick Ask show.
+  const [insightsOn, setInsightsOn] = useState(false);
+  useEffect(() => {
+    void window.electronAPI?.getAppSettings().then((settings) => setInsightsOn(settings.autoInsightsMinutes > 0)).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!meetingId || !window.electronAPI?.onLiveInsights) return;
@@ -81,11 +83,6 @@ export default function BentoGrid({ meetingId, listenerName }: BentoGridProps) {
     [liveInsights.suggestions],
   );
 
-  const recommendedTodo = useMemo(
-    () => suggestions.find((item) => item.type === 'action')?.text ?? null,
-    [suggestions],
-  );
-
   const handleToggleQuestion = (id: string) => {
     setResolvedQuestionIds((previous) => (
       previous.includes(id)
@@ -94,15 +91,18 @@ export default function BentoGrid({ meetingId, listenerName }: BentoGridProps) {
     ));
   };
 
-  const handleToggleTodo = (id: number) => {
-    setTodos((previous) =>
-      previous.map((item) => item.id === id ? { ...item, done: !item.done } : item),
+  if (!insightsOn) {
+    return (
+      <div className="bento-grid bento-grid-simple">
+        <div className="bento-left">
+          <LiveTranscript meetingId={meetingId} />
+        </div>
+        <div className="bento-right">
+          <QuickLookChat listenerName={listenerName} meetingId={meetingId} />
+        </div>
+      </div>
     );
-  };
-
-  const handleAddTodo = (text: string) => {
-    setTodos((previous) => [...previous, { id: Date.now(), text, done: false }]);
-  };
+  }
 
   return (
     <div className="bento-grid">
@@ -116,12 +116,6 @@ export default function BentoGrid({ meetingId, listenerName }: BentoGridProps) {
 
         <div className="bento-right-bottom">
           <div className="bento-right-bottom-left">
-            <TodoList
-              items={todos}
-              onToggle={handleToggleTodo}
-              onAdd={handleAddTodo}
-              recommendedText={recommendedTodo}
-            />
             <AISuggestions suggestions={suggestions} />
           </div>
 

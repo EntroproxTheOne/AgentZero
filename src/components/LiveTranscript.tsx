@@ -4,7 +4,9 @@ import type { TranscriptEntry } from '../types/meeting';
 
 function TranscriptLine({ entry, interim = false }: { entry: TranscriptEntry; interim?: boolean }) {
   const isYou = entry.source === 'you';
-  const speakerLabel = isYou
+  const speakerLabel = entry.speakerLabel
+    ? entry.speakerLabel
+    : isYou
     ? 'You'
     : entry.speakerId != null
       ? `Speaker ${entry.speakerId + 1}`

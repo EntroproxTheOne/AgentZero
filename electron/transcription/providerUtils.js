@@ -20,7 +20,7 @@ export function getTimestamp() {
 }
 
 export function buildPersistedEntry(entry) {
-  const speakerLabel = entry.source === 'you'
+  const speakerLabel = entry.speakerLabel ? entry.speakerLabel : entry.source === 'you'
     ? 'You'
     : entry.speakerId != null
       ? `Speaker ${entry.speakerId + 1}`
@@ -35,6 +35,8 @@ export function buildPersistedEntry(entry) {
     isFinal: true,
     languageCode: entry.languageCode ?? null,
     languageProbability: entry.languageProbability ?? null,
+    ...(entry.liveSide !== undefined ? { liveSide: entry.liveSide } : {}),
+    ...(entry.offsetMs !== undefined ? { offsetMs: entry.offsetMs } : {}),
   };
 }
 

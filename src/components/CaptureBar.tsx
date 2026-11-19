@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AlertCircle, Mic, MicOff, MonitorPlay, MonitorOff, Volume2, VolumeX } from 'lucide-react';
-import type { CaptureControls, CaptureState } from './capture';
+import { levelBus, type CaptureControls, type CaptureState } from './capture';
+import VideoSourcePicker from './VideoSourcePicker';
 
 interface CaptureBarProps {
   state: CaptureState;
@@ -9,9 +10,23 @@ interface CaptureBarProps {
   transcriptStatus?: { state: 'live' | 'reconnecting' | 'lost'; detail: string | null } | null;
 }
 
-/** What the live meeting is recording, with mic and computer sound switchable. */
+/** Loudness 0..1 RMS -> 0..100 % on a log-ish scale that suits speech. */
+const toPercent = (rms: number) => Math.max(0, Math.min(100, Math.round((Math.log10(Math.max(rms, 1e-4)) + 3.2) * 40)));
+
+function Meter({ value, label }: { value: number; label: string }) {
+  return (
+    <span className="level-meter" role="meter" aria-label={label} aria-valuenow={value} aria-valuemin={0} aria-valuemax={100}>
+      <span className="level-meter-fill" style={{ width: `${value}%` }} />
+    </span>
+  );
+}
+
+/** What the meeting is recording, with separate mic / computer-sound level meters. */
 export default function CaptureBar({ state, controls, transcriptStatus }: CaptureBarProps) {
   const [busy, setBusy] = useState<'mic' | 'sound' | null>(null);
+  const [levels, setLevels] = useState({ mic: 0, system: 0 });
+
+  useEffect(() => levelBus.subscribe((next) => setLevels({ mic: toPercent(next.mic), system: toPercent(next.system) })), []);
 
   const toggle = async (which: 'mic' | 'sound') => {
     if (!controls) return;
@@ -37,7 +52,8 @@ export default function CaptureBar({ state, controls, transcriptStatus }: Captur
         title={state.microphone ? 'Microphone is recording. Click to mute.' : 'Microphone is off. Click to turn it on.'}
       >
         {state.microphone ? <Mic size={14} /> : <MicOff size={14} />}
-        Mic {state.microphone ? 'on' : 'off'}
+        Mic
+        <Meter value={state.microphone ? levels.mic : 0} label="Microphone level" />
       </button>
       <button
         type="button"
@@ -48,7 +64,8 @@ export default function CaptureBar({ state, controls, transcriptStatus }: Captur
         title={state.computerSound ? 'Recording the other people on the call. Click to stop.' : 'Computer sound is off. Click to record the call audio.'}
       >
         {state.computerSound ? <Volume2 size={14} /> : <VolumeX size={14} />}
-        {busy === 'sound' ? 'Connecting…' : `Computer sound ${state.computerSound ? 'on' : 'off'}`}
+        {busy === 'sound' ? 'Connecting…' : 'Call audio'}
+        <Meter value={state.computerSound ? levels.system : 0} label="Computer sound level" />
       </button>
       <span
         className={`capture-chip capture-chip-static ${state.screenVideo ? 'capture-chip-on' : ''}`}
@@ -57,6 +74,14 @@ export default function CaptureBar({ state, controls, transcriptStatus }: Captur
         {state.screenVideo ? <MonitorPlay size={14} /> : <MonitorOff size={14} />}
         {state.screenVideo ? 'Screen video' : 'Audio only'}
       </span>
+      {state.screenVideo && controls && controls.detectedApps.length > 0 && (
+        <VideoSourcePicker
+          detectedApps={controls.detectedApps}
+          value={state.videoSource ?? 'auto'}
+          onChange={(id) => { void controls.setVideoSource(id); }}
+          className="capture-source-inline"
+        />
+      )}
       {transcriptStatus?.state === 'reconnecting' && (
         <span className="capture-problem" role="status">
           <AlertCircle size={14} /> Transcript reconnecting… audio is still being recorded.

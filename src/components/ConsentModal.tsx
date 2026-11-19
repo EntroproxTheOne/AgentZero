@@ -1,9 +1,10 @@
-import { ShieldAlert, Mic, Volume2, MonitorPlay } from 'lucide-react';
+import { ShieldAlert, Mic, Volume2, MonitorPlay, NotebookPen, Radio, Users, Video } from 'lucide-react';
 import ContextPicker from './ContextPicker';
+import VideoSourcePicker from './VideoSourcePicker';
 import type { MeetingContextValue } from './meetingContext';
 import type { CaptureChoice } from './capture';
+import type { RecordingMode } from '../types/meeting';
 import { useWorkspace } from '../hooks/useWorkspace';
-
 
 interface ConsentModalProps {
   detectedApps: string[];
@@ -11,17 +12,21 @@ interface ConsentModalProps {
   onCaptureChange: (value: CaptureChoice) => void;
   context: MeetingContextValue;
   onContextChange: (value: MeetingContextValue) => void;
-  identifySpeakers: boolean;
-  onIdentifySpeakersChange: (value: boolean) => void;
+  mode: RecordingMode;
+  onModeChange: (value: RecordingMode) => void;
+  videoSource: string;
+  onVideoSourceChange: (value: string) => void;
   onAccept: () => void;
   onCancel: () => void;
 }
 
 export default function ConsentModal({
-  detectedApps, capture, onCaptureChange, context, onContextChange, identifySpeakers, onIdentifySpeakersChange, onAccept, onCancel,
+  detectedApps, capture, onCaptureChange, context, onContextChange, mode, onModeChange, videoSource, onVideoSourceChange, onAccept, onCancel,
 }: ConsentModalProps) {
   const { clients, projects } = useWorkspace();
+
   const noSound = !capture.microphone && !capture.computerSound;
+  const online = capture.computerSound;
 
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="start-meeting-title">
@@ -43,13 +48,65 @@ export default function ConsentModal({
           </div>
         </div>
 
+        <h4 className="modal-section-label">Meeting</h4>
+        <div className="choice-pair" role="radiogroup" aria-label="Meeting type">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={online}
+            className={`choice-card ${online ? 'choice-card-on' : ''}`}
+            onClick={() => onCaptureChange({ ...capture, microphone: true, computerSound: true })}
+          >
+            <Video size={18} />
+            <span className="choice-title">Online</span>
+            <span className="choice-sub">Zoom, Teams, Meet… records your mic and the call audio</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={!online}
+            className={`choice-card ${!online ? 'choice-card-on' : ''}`}
+            onClick={() => onCaptureChange({ ...capture, microphone: true, computerSound: false, screenVideo: false })}
+          >
+            <Users size={18} />
+            <span className="choice-title">In person</span>
+            <span className="choice-sub">Microphone only</span>
+          </button>
+        </div>
+
+        <h4 className="modal-section-label">Mode</h4>
+        <div className="choice-pair" role="radiogroup" aria-label="Recording mode">
+          <button
+            type="button"
+            role="radio"
+            aria-checked={mode === 'notes'}
+            className={`choice-card ${mode === 'notes' ? 'choice-card-on' : ''}`}
+            onClick={() => onModeChange('notes')}
+          >
+            <NotebookPen size={18} />
+            <span className="choice-title">Notes</span>
+            <span className="choice-sub">Nothing on screen while you talk. Transcript, speakers and summary after the meeting.</span>
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={mode === 'live'}
+            className={`choice-card ${mode === 'live' ? 'choice-card-on' : ''}`}
+            onClick={() => onModeChange('live')}
+          >
+            <Radio size={18} />
+            <span className="choice-title">Live <em className="choice-tag">Best for 1:1 meetings</em></span>
+            <span className="choice-sub">Live transcript labelled You / Client, and Quick Ask during the meeting.</span>
+          </button>
+        </div>
+
         <h4 className="modal-section-label">What to record</h4>
         <div className="capture-list">
           <label className="capture-row">
             <Mic size={18} />
             <span className="capture-text">
               <span className="capture-title">Microphone</span>
-              <span className="capture-sub">Your voice, and everyone in the room for in-person meetings.</span>
+              <span className="capture-sub">Your voice, and everyone in the room.</span>
             </span>
             <input
               type="checkbox"
@@ -62,7 +119,7 @@ export default function ConsentModal({
             <Volume2 size={18} />
             <span className="capture-text">
               <span className="capture-title">Computer sound</span>
-              <span className="capture-sub">The other people on a call (Zoom, Teams, Meet…). Off for in-person meetings.</span>
+              <span className="capture-sub">The other people on the call. Kept separate from your mic to tell who said what.</span>
             </span>
             <input
               type="checkbox"
@@ -84,6 +141,15 @@ export default function ConsentModal({
               onChange={(e) => onCaptureChange({ ...capture, screenVideo: e.target.checked })}
             />
           </label>
+          {capture.screenVideo && detectedApps.length > 0 && (
+            <label className="capture-row capture-source-row">
+              <span className="capture-text">
+                <span className="capture-title">Show in the video</span>
+                <span className="capture-sub">You can switch this during the meeting. Call audio is recorded either way.</span>
+              </span>
+              <VideoSourcePicker detectedApps={detectedApps} value={videoSource} onChange={onVideoSourceChange} />
+            </label>
+          )}
         </div>
         <p className="capture-note">
           {noSound
@@ -91,16 +157,8 @@ export default function ConsentModal({
             : 'You can switch the microphone and computer sound on or off during the meeting.'}
         </p>
 
-        <h4 className="modal-section-label">Context <em>(optional)</em></h4>
+        <h4 className="modal-section-label">Client <em>(optional, helps name speakers and find past meetings)</em></h4>
         <ContextPicker value={context} onChange={onContextChange} clients={clients} projects={projects} compact />
-
-        <label className="upload-toggle">
-          <input type="checkbox" checked={identifySpeakers} onChange={(e) => onIdentifySpeakersChange(e.target.checked)} />
-          <span>
-            <strong>Identify speakers</strong> after the meeting (Speaker 1, Speaker 2…)
-            <em>Adds ₹0.10 per minute of audio (₹0.59 instead of ₹0.49)</em>
-          </span>
-        </label>
 
         <p className="modal-text modal-consent">
           Before recording I have taken full consent of all attendees of the meeting to record it for my personal use.
