@@ -30,7 +30,8 @@ function createSarvamUrl() {
   const url = new URL('wss://api.sarvam.ai/speech-to-text-realtime/ws');
   url.searchParams.set('model', SARVAM_MODEL);
   url.searchParams.set('language_code', 'auto');
-  url.searchParams.set('mode', 'transcribe');
+  // codemix keeps English words in English inside Gujarati / Hindi speech (verified 19 Nov 2026).
+  url.searchParams.set('mode', 'codemix');
   url.searchParams.set('sample_rate', '16000');
   url.searchParams.set('encoding', 'linear16');
   return url.toString();

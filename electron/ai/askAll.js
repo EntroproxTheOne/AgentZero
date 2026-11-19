@@ -47,7 +47,7 @@ export async function askAcrossMeetings({ question, clientId = null, projectId =
 
   const filters = [];
   const params = [];
-  if (clientId) { filters.push('(m.client_id = ? OR p.client_id = ?)'); params.push(Number(clientId), Number(clientId)); }
+  if (clientId) { filters.push('(m.client_id = ? OR (m.client_id IS NULL AND p.client_id = ?))'); params.push(Number(clientId), Number(clientId)); }
   if (projectId) { filters.push('m.project_id = ?'); params.push(Number(projectId)); }
   const meetings = getDB().prepare(`
     SELECT m.*, c.name AS client_name, p.name AS project_name

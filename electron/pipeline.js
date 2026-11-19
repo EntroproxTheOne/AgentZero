@@ -88,6 +88,7 @@ export async function mapMeetingSpeakers(meeting, entries) {
     frames,
     ownerName: meeting.owner_name || 'You',
     remoteHint: remoteNameHint({ clientName: meeting.client_name, title: meeting.title }),
+    online: meeting.capture_mode === 'online' ? true : meeting.capture_mode === 'in-person' ? false : null,
   });
   const labelled = applySpeakerNames(entries, map.speakers);
   await fs.writeFile(meeting.transcript_path, JSON.stringify(labelled, null, 2), 'utf8');
@@ -108,7 +109,7 @@ async function summariseLiveSpeakers(meeting, entries) {
     ...current,
     speakerMap: {
       mode: 'live',
-      oneSided: frames.length > 0 && systemWasSilent(frames),
+      oneSided: meeting.capture_mode === 'online' && frames.length > 0 && systemWasSilent(frames),
       names,
       unclearShare: Math.round(unclearShare * 100) / 100,
       // Many utterances the levels could not place: offer the diarization pass.
@@ -141,6 +142,10 @@ async function recoverInterruptedRecording(meeting) {
   let endTime = meeting.end_time_ms;
 
   const pcmBytes = await fileSize(pcmPath);
+  const finishedMp3 = path.join(folder, `${base}.mp3`);
+  if (!audioPath && pcmBytes === 0 && (await fileSize(finishedMp3)) > 0) {
+    audioPath = finishedMp3; // converted, but the app closed before saving the path
+  }
   if (!audioPath && pcmBytes > 0) {
     audioPath = path.join(folder, `${base}.mp3`);
     await pcmToMp3(pcmPath, audioPath);
@@ -175,15 +180,25 @@ function isTransient(error) {
   if (error?.permanent) return false;
   const message = String(error?.message ?? error);
   if (/\((4\d\d)\)/.test(message) && !/\((408|429)\)/.test(message)) return false;
-  if (/not set|not a service account|Unsupported|ffmpeg failed/i.test(message)) return false;
+  if (/not set|not a service account|Unsupported|ffmpeg failed|SQLITE_CONSTRAINT/i.test(message)) return false;
   return true; // network drops, timeouts, 5xx, 429
 }
 
 /** Run (or join) processing for one meeting. Safe to call repeatedly. */
+const rerunRequested = new Set();
+
 export function processMeeting(dbId) {
-  if (running.has(dbId)) return running.get(dbId);
+  if (running.has(dbId)) {
+    // A speaker correction or "Improve speaker labels" while a run is in progress:
+    // run again once it finishes, so the change is not lost.
+    rerunRequested.add(dbId);
+    return running.get(dbId);
+  }
   clearTimeout(retryTimers.get(dbId));
-  const promise = run(dbId).finally(() => running.delete(dbId));
+  const promise = run(dbId).finally(() => {
+    running.delete(dbId);
+    if (rerunRequested.delete(dbId)) void processMeeting(dbId);
+  });
   running.set(dbId, promise);
   return promise;
 }
@@ -247,9 +262,12 @@ async function applyBatchResult(meeting) {
   return updated;
 }
 
+// Titles the app made up (not typed by the user) are replaced by the topic.
+const PLACEHOLDER_TITLE = /^(Untitled Meeting|Uploaded: .*|(Zoom|Microsoft Teams|Cisco Webex|Slack|FaceTime|Discord|Skype|Google Meet|Webex)( \(.*\))? Meeting)$/;
+
 function useExtractedTitle(meeting, extraction) {
   const title = extraction?.title?.trim();
-  if (!title || meeting.title !== 'Untitled Meeting') return;
+  if (!title || !PLACEHOLDER_TITLE.test(meeting.title)) return;
   getDB().prepare('UPDATE Meetings SET title = ? WHERE id = ?').run(title, meeting.id);
   emitToRenderer('meeting-title-updated', { dbId: meeting.id, title });
 }

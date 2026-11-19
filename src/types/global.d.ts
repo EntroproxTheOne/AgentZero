@@ -43,7 +43,7 @@ declare global {
       sendVideoChunk: (meetingId: number, buffer: ArrayBuffer) => void;
       flushMeetingWrites: (data: { meetingId: number }) => Promise<void>;
       detectMeetingApps: () => Promise<string[]>;
-      startMeeting: (data: { title: string; recordScreen?: boolean; clientId?: number | null; projectId?: number | null; agenda?: string; mode?: RecordingMode }) => Promise<CurrentMeetingInfo & { meetingFolder: string; nameBase: string }>;
+      startMeeting: (data: { title: string; recordScreen?: boolean; clientId?: number | null; projectId?: number | null; agenda?: string; mode?: RecordingMode; online?: boolean }) => Promise<CurrentMeetingInfo & { meetingFolder: string; nameBase: string }>;
       stopMeeting: (data: { meetingId: number; dbId: number; startTime: number; title: string }) => Promise<(CurrentMeetingInfo & { discarded?: false }) | { discarded: true; discardReason: string } | null>;
       getMeetings: () => Promise<MeetingRecord[]>;
       getMeetingArtifacts: (data: { dbId: number }) => Promise<MeetingArtifactsResponse | null>;

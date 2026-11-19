@@ -45,7 +45,8 @@ export default function VideoSourcePicker({ detectedApps, value, onChange, disab
           {windows.map((source) => <option key={source.id} value={source.id}>{source.name.length > 60 ? `${source.name.slice(0, 57)}…` : source.name}</option>)}
         </optgroup>
       )}
-      {!known && <option value={value}>Current selection</option>}
+      {value === 'paused' && <option value="paused" disabled>Video paused: pick a source</option>}
+      {!known && value !== 'paused' && <option value={value}>Current selection</option>}
     </select>
   );
 }

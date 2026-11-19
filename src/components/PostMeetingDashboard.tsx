@@ -102,6 +102,15 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
   }, [showCost, meetingDbId, meetingData]);
 
   const meeting = meetingData?.meeting;
+  const isProcessingNow = ['transcribing', 'analyzing', 'recording'].includes(processing?.state ?? meetingData?.meeting?.processing_state ?? 'done');
+  // Belt and braces: while processing, refresh every few seconds so the record,
+  // Ask and templates appear as soon as they are ready, even if an event was missed.
+  useEffect(() => {
+    if (!isProcessingNow) return undefined;
+    const timer = window.setInterval(() => void reload(), 4000);
+    return () => window.clearInterval(timer);
+  }, [isProcessingNow, meetingDbId]);
+
   const artifacts = meetingData?.artifacts ?? null;
   const extraction = artifacts?.extraction ?? null;
   const speakerMap = artifacts?.speakerMap ?? null;
@@ -181,7 +190,7 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
   };
 
   const ownerEntry = speakerMap?.speakers && speakerMap.ownerId ? speakerMap.speakers[speakerMap.ownerId] : null;
-  const showOwnerQuestion = speakerMap?.mode === 'diarized' && speakerMap.needsConfirmation && !speakerMap.confirmed && ownerEntry;
+  const showOwnerQuestion = !isProcessingNow && speakerMap?.mode === 'diarized' && speakerMap.needsConfirmation && !speakerMap.confirmed && ownerEntry;
   const liveCanImprove = meeting?.recording_mode === 'live' && !artifacts?.usage?.sttBatch && meeting?.audio_file_path;
 
   const decisions = extraction?.decisions ?? [];
@@ -255,7 +264,7 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
           <UserCheck size={16} />
           {!pickingOwner ? (
             <>
-              <span>Is <strong>{ownerEntry.name}</strong> you? ({Math.round(ownerEntry.seconds / 60) || '<1'} min of speech)</span>
+              <span>Is <strong>{ownerEntry.name}</strong> you? ({Math.round(ownerEntry.seconds / 60) || '<1'} min of speech, first line L{(entries.findIndex((e) => e.speakerLabel === ownerEntry.name) + 1) || '?'})</span>
               <button className="setting-link-btn" onClick={() => void run(() => window.electronAPI.confirmOwner({ dbId: meetingDbId, speakerId: speakerMap.ownerId as string, isOwner: true }))}>Yes</button>
               <button className="setting-link-btn" onClick={() => setPickingOwner(true)}>No</button>
             </>
@@ -267,6 +276,7 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
                   {person.name}
                 </button>
               ))}
+              <button className="setting-link-btn" onClick={() => { setPickingOwner(false); void run(() => window.electronAPI.confirmOwner({ dbId: meetingDbId, speakerId: speakerMap.ownerId as string, isOwner: false })); }}>None of them</button>
               <button className="setting-link-btn" onClick={() => setPickingOwner(false)}>Cancel</button>
             </>
           )}
@@ -302,7 +312,7 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
                 <button className="setting-link-btn" onClick={() => { const next = renaming; setRenaming(null); void run(() => window.electronAPI.renameSpeaker({ dbId: meetingDbId, from: next.from, to: next.to })); }}><Check size={13} /></button>
               </span>
             ) : (
-              <button key={name} type="button" className="meeting-chip pm-speaker-chip" onClick={() => setRenaming({ from: name, to: name })} title="Rename everywhere in this meeting">
+              <button key={name} type="button" className="meeting-chip pm-speaker-chip" onClick={() => setRenaming({ from: name, to: name })} title="Rename everywhere in this meeting. Same person split in two? Give both the same name to merge them.">
                 {name} <Pencil size={11} />
               </button>
             )
@@ -383,6 +393,7 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
                             <input value={editingTask.due ?? ''} onChange={(e) => setEditingTask({ ...editingTask, due: e.target.value || null })} placeholder="Due" aria-label="Due" />
                             <button className="setting-link-btn" onClick={() => { const next = editingTask; setEditingTask(null); void editItem('task', next.id, { task: next.task, owner: next.owner, due: next.due }); }}>Save</button>
                             <button className="setting-link-btn" onClick={() => { const next = editingTask; setEditingTask(null); void editItem('task', next.id, { status: 'cancelled' }); }}>Remove</button>
+                            <button className="setting-link-btn" onClick={() => setEditingTask(null)}>Cancel</button>
                           </span>
                         ) : (
                           <label key={task.id} className={`pm-action-item ${task.done ? 'pm-action-done' : ''}`}>
@@ -427,6 +438,12 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
                     <ul className="pm-key-points">{extraction.documents_requested.map((doc) => <li key={doc.item}>{doc.item}{doc.from ? ` (from ${doc.from})` : ''}</li>)}</ul>
                   </div>
                 )}
+                {extraction.open_questions.length > 0 && (
+                  <div className="pm-summary-section">
+                    <h4 className="pm-section-title">Open Questions</h4>
+                    <ul className="pm-key-points">{extraction.open_questions.map((q, index) => <li key={index}>{q.text}{q.line_id ? <button type="button" className="cite-chip" onClick={() => jumpTo(q.line_id as number)}>L{q.line_id}</button> : null}</li>)}</ul>
+                  </div>
+                )}
                 {extraction.figures.length > 0 && (
                   <div className="pm-summary-section">
                     <h4 className="pm-section-title">Figures Mentioned</h4>
@@ -439,7 +456,11 @@ export default function PostMeetingDashboard({ meetingTitle, meetingDbId, onNewM
         </div>
 
         <div className="pm-right-col">
-          <MeetingAsk dbId={meetingDbId} ready={Boolean(extraction)} initialHistory={artifacts?.ask?.history ?? []} onJump={jumpTo} />
+          {meetingData ? (
+            <MeetingAsk key={meetingDbId} dbId={meetingDbId} ready={Boolean(extraction)} initialHistory={artifacts?.ask?.history ?? []} onJump={jumpTo} />
+          ) : (
+            <div className="bento-panel pm-ask"><div className="bento-panel-header"><Sparkles size={16} /><span>Ask about this meeting</span></div></div>
+          )}
 
           <div className="pm-metrics bento-panel">
             <div className="bento-panel-header"><BarChart3 size={16} /><span>Metrics</span></div>

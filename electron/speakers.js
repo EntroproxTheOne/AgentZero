@@ -77,10 +77,13 @@ export function remoteNameHint({ clientName, title }) {
  * entries: transcript entries with speakerId and startSeconds/endSeconds.
  * Returns { speakers: {id: {name, side, share, isOwner, seconds}}, ownerId, confidence, oneSided, needsConfirmation }.
  */
-export function mapSpeakers({ entries, frames, ownerName, remoteHint }) {
+export function mapSpeakers({ entries, frames, ownerName, remoteHint, online = null }) {
   const owner = (ownerName || 'You').trim();
   const slots = indexFrames(frames);
-  const oneSided = frames.length > 0 && systemWasSilent(frames);
+  // In person (mic only) everyone is in the room; "one-sided" means an ONLINE call
+  // whose call audio stayed silent (e.g. moved to a phone at the ear).
+  const inPerson = online === false;
+  const oneSided = online === true && frames.length > 0 && systemWasSilent(frames);
   const stats = new Map();
   for (const entry of entries) {
     if (entry.speakerId === null || entry.speakerId === undefined) continue;
@@ -102,7 +105,7 @@ export function mapSpeakers({ entries, frames, ownerName, remoteHint }) {
   if (people.length === 0) return { speakers: {}, ownerId: null, confidence: 0, oneSided, needsConfirmation: false };
 
   for (const person of people) {
-    if (oneSided || person.share === null) person.side = oneSided ? 'local' : 'unknown';
+    if (oneSided || inPerson || person.share === null) person.side = oneSided || inPerson ? 'local' : 'unknown';
     else person.side = person.share >= LOCAL_SHARE ? 'local' : person.share <= REMOTE_SHARE ? 'remote' : 'unknown';
   }
 
@@ -111,9 +114,13 @@ export function mapSpeakers({ entries, frames, ownerName, remoteHint }) {
   let ownerId;
   let confidence;
   if (frames.length === 0) {
-    // No level data (older recording): most talkative speaker, low confidence.
+    // No level data (uploads, older recordings): a guess, always confirmed by the user.
     ownerId = [...people].sort(byTalk)[0].id;
-    confidence = people.length === 1 ? 0.8 : 0.3;
+    confidence = people.length === 1 ? 0.5 : 0.3;
+  } else if (inPerson) {
+    // Everyone is on the mic: only a single voice can be named without asking.
+    ownerId = [...people].sort(byTalk)[0].id;
+    confidence = people.length === 1 ? 0.85 : 0.35;
   } else if (oneSided) {
     ownerId = [...people].sort(byTalk)[0].id;
     confidence = people.length === 1 ? 0.95 : 0.4;
@@ -132,12 +139,14 @@ export function mapSpeakers({ entries, frames, ownerName, remoteHint }) {
     confidence = 0.3;
   }
 
+  // Below the confirmation threshold nobody gets the owner's name until the user says so.
+  const sure = confidence >= CONFIRM_BELOW;
   const speakers = {};
   let remoteNamed = false;
-  let counter = 2;
+  let counter = sure ? 2 : 1;
   for (const person of [...people].sort(byTalk)) {
     let name;
-    if (person.id === ownerId) name = owner;
+    if (person.id === ownerId && sure) name = owner;
     else if (person.side === 'remote' && !remoteNamed) {
       name = remoteHint || 'Client';
       remoteNamed = true;
@@ -150,10 +159,10 @@ export function mapSpeakers({ entries, frames, ownerName, remoteHint }) {
       side: person.id === ownerId ? 'local' : person.side,
       share: person.share === null ? null : Math.round(person.share * 100) / 100,
       seconds: Math.round(person.seconds),
-      isOwner: person.id === ownerId,
+      isOwner: person.id === ownerId && sure,
     };
   }
-  return { speakers, ownerId, confidence, oneSided, needsConfirmation: confidence < CONFIRM_BELOW };
+  return { speakers, ownerId, confidence, oneSided, inPerson, needsConfirmation: !sure };
 }
 
 /** Rewrite transcript labels from a speaker map. */

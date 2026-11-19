@@ -44,14 +44,15 @@ export function computeMeetingCost({ artifacts, startTimeMs, endTimeMs }) {
   const wallMinutes = startTimeMs && endTimeMs ? Math.max(0, (endTimeMs - startTimeMs) / 60000) : 0;
   const liveMinutes = usage.stt
     ? (typeof usage.stt.billedAudioSeconds === 'number' ? usage.stt.billedAudioSeconds / 60 : wallMinutes)
-    : (!usage.sttBatch ? wallMinutes : 0);
+    // Older builds streamed every meeting and kept no usage record at all.
+    : (!usage.sttBatch && !artifacts?.extraction && !artifacts?.speakerMap && Array.isArray(usage.ai) === false ? wallMinutes : 0);
   const liveSttInr = (liveMinutes / 60) * PRICING.sarvamSttInrPerHour;
   const batch = usage.sttBatch;
   const batchMinutes = batch && !batch.skipped ? (batch.billedAudioSeconds ?? 0) / 60 : 0;
   const batchInr = (batchMinutes / 60) * (batch?.diarized ? PRICING.sarvamDiarizedInrPerHour : PRICING.sarvamSttInrPerHour);
   // "Go live" catch-up: earlier audio transcribed in batch without diarization.
   const catchUpMinutes = (usage.sttCatchUp?.billedAudioSeconds ?? 0) / 60;
-  const catchUpInr = (catchUpMinutes / 60) * PRICING.sarvamSttInrPerHour;
+  const catchUpInr = (catchUpMinutes / 60) * PRICING.sarvamDiarizedInrPerHour;
   const sttInr = liveSttInr + batchInr + catchUpInr;
   const totalInr = (aiUsd + searchUsd) * PRICING.usdToInr + sttInr;
 

@@ -199,7 +199,7 @@ export async function generateGeminiJson({
             config: thinkingLevel ? { ...config, thinkingConfig: { thinkingLevel } } : config,
           });
         } catch (error) {
-          if (!thinkingLevel) throw error;
+          if (!thinkingLevel || !/\b400\b|thinking|INVALID_ARGUMENT/i.test(formatFailure(error))) throw error;
           response = await client.models.generateContent({ model: candidate, contents: prompt, config });
         }
 

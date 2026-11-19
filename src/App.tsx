@@ -100,19 +100,18 @@ function App() {
     setActiveTab('dashboard');
   };
 
+  const [stopping, setStopping] = useState(false);
   const handleStopClick = async () => {
-    if (Date.now() - recordingStartTimeRef.current < 1000) {
-      return;
-    }
-
-    if (stopFnRef.current) {
-      setStopError(null);
-      try {
-        await stopFnRef.current();
-      } catch (error) {
-        const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error);
-        setStopError(`Could not stop cleanly: ${message}. Press Stop Recording again to retry.`);
-      }
+    if (stopping || !stopFnRef.current) return;
+    setStopError(null);
+    setStopping(true);
+    try {
+      await stopFnRef.current();
+    } catch (error) {
+      const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error);
+      setStopError(`Could not stop cleanly: ${message}. Press Stop Recording again to retry.`);
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -191,9 +190,11 @@ function App() {
             <button
               onClick={() => void handleStopClick()}
               className="recorder-btn recorder-btn-stop recorder-btn-compact"
+              disabled={stopping}
+              aria-busy={stopping}
             >
-              <Square size={16} />
-              Stop Recording
+              {stopping ? <div className="recorder-spinner" /> : <Square size={16} />}
+              {stopping ? 'Saving recording…' : 'Stop Recording'}
             </button>
           </header>
           <CaptureBar state={captureState} controls={captureControls} transcriptStatus={sttStatus} />

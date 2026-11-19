@@ -56,12 +56,29 @@ function buildPrompt({ title, transcript, ownerName, speakerNames, oneSided, pro
 
 const str = (value) => (typeof value === 'string' ? value.trim() : '');
 const lineId = (value) => (Number.isInteger(Number(value)) ? Number(value) : null);
-const topicKey = (value) => str(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const topicKey = (value) => str(value).toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 
-/** Normalise and check. Returns { value, problems }. */
-export function validateExtraction(raw, lineCount) {
+const words = (text) => String(text ?? '').toLowerCase().normalize('NFKC').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+
+/** True when most of the quote's words are on the cited line (models paraphrase slightly). */
+export function quoteMatches(quote, lineText) {
+  const quoteWords = words(quote);
+  if (quoteWords.length === 0) return true;
+  const lineWords = new Set(words(lineText));
+  const hits = quoteWords.filter((word) => lineWords.has(word)).length;
+  return hits / quoteWords.length >= 0.6;
+}
+
+/**
+ * Normalise and check against the transcript itself. Returns { value, problems }.
+ * entries: the transcript entries the [L#] ids refer to (1-based).
+ */
+export function validateExtraction(raw, entries) {
+  const lines = normalizeTranscriptEntries(Array.isArray(entries) ? entries : []);
+  const lineCount = lines.length;
   const problems = [];
   const validLine = (id) => id !== null && id >= 1 && id <= lineCount;
+  const speakerNames = new Map(lines.map((line) => [String(line.speakerLabel ?? '').toLowerCase(), line.speakerLabel]));
 
   const decisions = (Array.isArray(raw?.decisions) ? raw.decisions : []).map((item, index) => {
     const evidence = (Array.isArray(item?.evidence) ? item.evidence : []).map((ev) => ({
@@ -69,7 +86,12 @@ export function validateExtraction(raw, lineCount) {
     }));
     const bad = evidence.filter((ev) => !validLine(ev.line_id));
     if (bad.length) problems.push(`Decision "${str(item?.statement)}" cites line ids that do not exist (${bad.map((ev) => ev.line_id).join(', ')}).`);
-    const good = evidence.filter((ev) => validLine(ev.line_id));
+    const misquoted = evidence.filter((ev) => validLine(ev.line_id) && !quoteMatches(ev.quote, lines[ev.line_id - 1].text));
+    if (misquoted.length) problems.push(`Decision "${str(item?.statement)}" quotes words that are not on line(s) ${misquoted.map((ev) => ev.line_id).join(', ')}.`);
+    // Speaker always comes from the transcript, never from the model.
+    const good = evidence
+      .filter((ev) => validLine(ev.line_id) && quoteMatches(ev.quote, lines[ev.line_id - 1].text))
+      .map((ev) => ({ ...ev, speaker: lines[ev.line_id - 1].speakerLabel || ev.speaker }));
     let status = DECISION_STATUS.includes(item?.status) ? item.status : 'unclear';
     if (good.length === 0 && status !== 'unclear') problems.push(`Decision "${str(item?.statement)}" has no evidence.`);
     return {
@@ -82,6 +104,13 @@ export function validateExtraction(raw, lineCount) {
     };
   }).filter((item) => item.statement);
 
+  // A decision that names a later decision as its replacement is reversed.
+  const ids = new Set(decisions.map((d) => d.id));
+  for (const decision of decisions) {
+    if (decision.superseded_by && !ids.has(decision.superseded_by)) decision.superseded_by = null;
+    if (decision.superseded_by && decision.status !== 'reversed') decision.status = 'reversed';
+  }
+
   const byTopic = new Map();
   for (const decision of decisions) {
     if (decision.status !== 'confirmed') continue;
@@ -90,17 +119,22 @@ export function validateExtraction(raw, lineCount) {
   }
   for (const [topic, group] of byTopic) {
     if (group.length > 1 && new Set(group.map((d) => topicKey(d.statement))).size > 1) {
-      problems.push(`Decisions ${group.map((d) => d.id).join(', ')} on "${topic}" conflict: mark the earlier one reversed.`);
+      problems.push(`Decisions ${group.map((d) => d.id).join(', ')} share the topic "${topic}". If one replaced the other, mark the earlier one reversed; if they are separate decisions, give each a more specific topic.`);
     }
   }
 
   const actionItems = (Array.isArray(raw?.action_items) ? raw.action_items : []).map((item, index) => {
     let owner = str(item?.owner) || 'UNASSIGNED';
     const ownerLine = lineId(item?.owner_evidence_line_id);
-    if (owner.toUpperCase() !== 'UNASSIGNED' && !validLine(ownerLine)) {
+    if (owner.toUpperCase() === 'UNASSIGNED') owner = 'UNASSIGNED';
+    else if (!speakerNames.has(owner.toLowerCase())) {
+      problems.push(`Task "${str(item?.task)}" has owner "${owner}", who is not a speaker in the transcript. Use a speaker name or UNASSIGNED.`);
+    } else {
+      owner = speakerNames.get(owner.toLowerCase());
+    }
+    if (owner !== 'UNASSIGNED' && !validLine(ownerLine)) {
       problems.push(`Task "${str(item?.task)}" has owner ${owner} without a valid owner_evidence_line_id.`);
     }
-    if (owner.toUpperCase() === 'UNASSIGNED') owner = 'UNASSIGNED';
     return {
       id: str(item?.id) || `a${index + 1}`,
       task: str(item?.task),
@@ -119,6 +153,17 @@ export function validateExtraction(raw, lineCount) {
     return out;
   }).filter((item) => item[fields[0]]);
 
+  // Ids must be unique (they key the MeetingItems rows and user edits).
+  const uniqueIds = (list, prefix) => {
+    const seen = new Set();
+    return list.map((item, index) => {
+      let id = item.id;
+      if (seen.has(id)) id = `${prefix}${index + 1}x`;
+      seen.add(id);
+      return id === item.id ? item : { ...item, id };
+    });
+  };
+
   const value = {
     title: str(raw?.title),
     summary: str(raw?.summary),
@@ -126,8 +171,8 @@ export function validateExtraction(raw, lineCount) {
       text: str(typeof item === 'string' ? item : item?.text),
       line_ids: (Array.isArray(item?.line_ids) ? item.line_ids : []).map(lineId).filter(validLine),
     })).filter((item) => item.text),
-    decisions,
-    action_items: actionItems,
+    decisions: uniqueIds(decisions, 'd'),
+    action_items: uniqueIds(actionItems, 'a'),
     figures: withLine(raw?.figures, ['label', 'value']),
     documents_requested: withLine(raw?.documents_requested, ['item', 'from']),
     open_questions: withLine(raw?.open_questions, ['text']),
@@ -137,7 +182,8 @@ export function validateExtraction(raw, lineCount) {
 }
 
 /** After a failed retry: keep the record, but never show unsupported items as settled. */
-function quarantine(value) {
+function quarantine(value, entries) {
+  const known = new Set(normalizeTranscriptEntries(entries).map((line) => String(line.speakerLabel ?? '').toLowerCase()));
   const latestByTopic = new Map();
   const lastLine = (d) => Math.max(0, ...d.evidence.map((ev) => ev.line_id));
   for (const d of value.decisions) {
@@ -153,7 +199,9 @@ function quarantine(value) {
       if (d.status === 'confirmed' && latestByTopic.get(topicKey(d.topic)) !== d) return { ...d, status: 'unclear' };
       return d;
     }),
-    action_items: value.action_items.map((a) => (a.owner !== 'UNASSIGNED' && !a.owner_evidence_line_id ? { ...a, owner: 'UNASSIGNED' } : a)),
+    action_items: value.action_items.map((a) => (
+      a.owner !== 'UNASSIGNED' && (!a.owner_evidence_line_id || !known.has(a.owner.toLowerCase())) ? { ...a, owner: 'UNASSIGNED' } : a
+    )),
   };
 }
 
@@ -224,16 +272,30 @@ export function syncMeetingItems(dbId, extraction) {
   })();
 }
 
-async function saveExtraction(session, extraction, meta) {
-  const views = deriveViews(extraction, session.title);
-  const updated = await updateArtifactsFile(session.artifactsPath, (current) => ({
-    ...current,
-    extraction: { ...extraction, status: 'ready', updatedAt: new Date().toISOString(), ...meta },
-    extractionStale: false,
-    highlights: views.highlights,
-    minutesOfMeeting: views.minutes,
-  }));
-  if (session.dbId) syncMeetingItems(session.dbId, extraction);
+function keepUserEdits(fresh, previous) {
+  const merge = (list, old) => {
+    const edited = (old ?? []).filter((item) => item.edited);
+    const editedIds = new Set(edited.map((item) => item.id));
+    return [...list.filter((item) => !editedIds.has(item.id)), ...edited];
+  };
+  return { ...fresh, decisions: merge(fresh.decisions, previous.decisions), action_items: merge(fresh.action_items, previous.action_items) };
+}
+
+/** Save a record (or apply a change to the current one) inside the artifacts write queue. */
+async function saveExtraction(session, extractionOrUpdater, meta, { clearStale = false } = {}) {
+  const updated = await updateArtifactsFile(session.artifactsPath, (current) => {
+    const extraction = typeof extractionOrUpdater === 'function' ? extractionOrUpdater(current.extraction) : extractionOrUpdater;
+    const views = deriveViews(extraction, session.title);
+    return {
+      ...current,
+      extraction: { ...extraction, status: 'ready', updatedAt: new Date().toISOString(), ...meta },
+      // Only a fresh run clears "summary out of date"; edits keep it as it was.
+      extractionStale: clearStale ? false : Boolean(current.extractionStale),
+      highlights: views.highlights,
+      minutesOfMeeting: views.minutes,
+    };
+  });
+  if (session.dbId) syncMeetingItems(session.dbId, updated.extraction);
   return updated;
 }
 
@@ -268,13 +330,16 @@ export async function runExtraction(session) {
         purpose: 'extraction',
         context: session.contextText ?? '',
       });
-      result = validateExtraction(parseJsonText(response.text), entries.length);
+      result = validateExtraction(parseJsonText(response.text), entries);
       problems = result.problems;
       if (problems.length === 0) break;
       console.warn(`[Extraction] Attempt ${attempt + 1} rejected:`, problems.join(' | '));
     }
-    const extraction = problems.length ? quarantine(result.value) : result.value;
-    return await saveExtraction(session, extraction, { validationProblems: problems, oneSided: Boolean(session.oneSided) });
+    const fresh = problems.length ? quarantine(result.value, entries) : result.value;
+    // Items the user edited by hand survive a re-run (e.g. after a speaker correction).
+    const previous = (await readArtifactsFile(session.artifactsPath))?.extraction;
+    const extraction = previous ? keepUserEdits(fresh, previous) : fresh;
+    return await saveExtraction(session, extraction, { validationProblems: problems, oneSided: Boolean(session.oneSided) }, { clearStale: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await updateArtifactsFile(session.artifactsPath, (current) => ({
@@ -285,20 +350,20 @@ export async function runExtraction(session) {
   }
 }
 
-/** A user edit to a decision or task: persisted to the extraction, all views refreshed. */
+/** A user edit to a decision or task: applied inside the write queue, all views refreshed. */
 export async function editExtractionItem({ dbId, artifactsPath, title, kind, id, patch }) {
   const artifacts = await readArtifactsFile(artifactsPath);
-  const extraction = artifacts?.extraction;
-  if (!extraction) throw new Error('This meeting has no extracted record yet.');
+  if (!artifacts?.extraction) throw new Error('This meeting has no extracted record yet.');
   const list = kind === 'decision' ? 'decisions' : 'action_items';
   const allowed = kind === 'decision' ? ['statement', 'status', 'topic'] : ['task', 'owner', 'due', 'status', 'done'];
   const clean = Object.fromEntries(Object.entries(patch ?? {}).filter(([key]) => allowed.includes(key)));
   if (clean.status && !(kind === 'decision' ? DECISION_STATUS : TASK_STATUS).includes(clean.status)) delete clean.status;
-  let items;
-  if (patch?.delete) items = extraction[list].filter((item) => item.id !== id);
-  else if (!extraction[list].some((item) => item.id === id) && kind === 'task') {
-    items = [...extraction[list], { id, task: '', owner: 'UNASSIGNED', owner_evidence_line_id: null, due: null, status: 'confirmed', done: false, ...clean, edited: true }];
-  } else items = extraction[list].map((item) => (item.id === id ? { ...item, ...clean, edited: true } : item));
-  const next = { ...extraction, [list]: items };
-  return saveExtraction({ dbId, artifactsPath, title }, next, {});
+  return saveExtraction({ dbId, artifactsPath, title }, (extraction) => {
+    let items;
+    if (patch?.delete) items = extraction[list].filter((item) => item.id !== id);
+    else if (!extraction[list].some((item) => item.id === id) && kind === 'task') {
+      items = [...extraction[list], { id, task: '', owner: 'UNASSIGNED', owner_evidence_line_id: null, due: null, status: 'confirmed', done: false, ...clean, edited: true }];
+    } else items = extraction[list].map((item) => (item.id === id ? { ...item, ...clean, edited: true } : item));
+    return { ...extraction, [list]: items };
+  }, {});
 }

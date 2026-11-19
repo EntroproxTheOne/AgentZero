@@ -71,6 +71,14 @@ export default function LiveTranscript({ meetingId }: LiveTranscriptProps) {
         return;
       }
 
+      // Catch-up lines (the part recorded before "Go live") belong before the live ones.
+      if (entry.catchUp) {
+        setEntries((previous) => {
+          const lastCatchUp = previous.reduce((at, item, index) => (item.catchUp ? index : at), -1);
+          return [...previous.slice(0, lastCatchUp + 1), entry, ...previous.slice(lastCatchUp + 1)];
+        });
+        return;
+      }
       setEntries((previous) => [...previous, entry]);
       setInterim(null);
     });

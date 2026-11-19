@@ -158,9 +158,14 @@ function configureDisplayMediaHandler() {
   // NSAudioCaptureUsageDescription and the "System Audio Recording" permission.
   session.defaultSession.setDisplayMediaRequestHandler((request, callback) => {
     desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
-      const preferred = preferredCaptureSourceId && sources.find((source) => source.id === preferredCaptureSourceId);
-      const videoSource = preferred || sources.find((source) => source.id.startsWith('screen:')) || sources[0];
+      const wanted = preferredCaptureSourceId;
       preferredCaptureSourceId = null;
+      const preferred = wanted && sources.find((source) => source.id === wanted);
+      if (wanted && !preferred) {
+        callback({});
+        return;
+      }
+      const videoSource = preferred || sources.find((source) => source.id.startsWith('screen:')) || sources[0];
       if (!videoSource) {
         callback({});
         return;
@@ -174,6 +179,20 @@ const aiService = new MeetingAiService({
   getSession: getMeetingSession,
   emitToRenderer,
 });
+
+let closingWithRecording = false;
+
+/** Close every open recording's files so the next launch can recover and process it. */
+async function saveOpenRecordings() {
+  for (const [meetingId, sessionState] of [...meetingSessions.entries()]) {
+    await stopTranscription(meetingId, { dbId: sessionState.dbId, transcriptPath: sessionState.mode === 'live' ? sessionState.transcriptPath : null }).catch(() => {});
+    await sessionState.levelsWriter?.finalize().catch(() => {});
+    await sessionState.writer?.finalize().catch(() => {});
+    await sessionState.audioWriter?.finalize().catch(() => {});
+    aiService.unregisterMeeting(meetingId);
+    meetingSessions.delete(meetingId);
+  }
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -190,6 +209,24 @@ function createWindow() {
       backgroundThrottling: false,
     },
     backgroundColor: '#ffffff',
+  });
+
+  // Closing the window mid-meeting: ask, then save what was recorded (it is
+  // transcribed like any recording) instead of leaving a half-open session.
+  mainWindow.on('close', (event) => {
+    if (meetingSessions.size === 0 || closingWithRecording) return;
+    event.preventDefault();
+    const choice = dialog.showMessageBoxSync(mainWindow, {
+      type: 'warning',
+      buttons: ['Keep recording', 'Stop and close'],
+      defaultId: 0,
+      cancelId: 0,
+      message: 'A meeting is still recording.',
+      detail: 'Stop and close saves what was recorded so far and processes it next time the app opens.',
+    });
+    if (choice !== 1) return;
+    closingWithRecording = true;
+    void saveOpenRecordings().finally(() => mainWindow?.close());
   });
 
   if (app.isPackaged) {
@@ -485,7 +522,7 @@ registerGuardedHandle('flush-meeting-writes', async (_event, { meetingId }) => {
 });
 
 registerGuardedHandle('start-meeting', async (_event, {
-  title, recordScreen: requestedRecordScreen, clientId = null, projectId = null, agenda = '', mode: requestedMode,
+  title, recordScreen: requestedRecordScreen, clientId = null, projectId = null, agenda = '', mode: requestedMode, online = true,
 }) => {
   const db = getDB();
   // Per-meeting choice (in person = audio only) wins over the Settings default.
@@ -530,8 +567,9 @@ registerGuardedHandle('start-meeting', async (_event, {
       processing_state,
       batch_diarize,
       recording_mode,
-      owner_name
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', 'recording', 0, ?, ?)
+      owner_name,
+      capture_mode
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'live', 'recording', 0, ?, ?, ?)
   `).run(
     title || 'Untitled Meeting',
     dateIso,
@@ -546,6 +584,7 @@ registerGuardedHandle('start-meeting', async (_event, {
     String(agenda ?? '').trim() || null,
     mode,
     ownerName,
+    online ? 'online' : 'in-person',
   );
 
   const dbId = Number(info.lastInsertRowid);
@@ -571,6 +610,9 @@ registerGuardedHandle('start-meeting', async (_event, {
     levelsWriter: new AsyncChunkWriter(path.join(meetingFolder, 'levels.bin'), { onError: (error) => console.warn('[Main] levels.bin:', error.message) }),
     recentLevels: [],
     audioStartEpoch: null,
+    // The mode the meeting started in (it can switch Notes -> Live later).
+    startedMode: mode,
+    pcmBytes: 0,
     recordScreen,
     transcriptEntries: [],
     status: 'recording',
@@ -662,18 +704,23 @@ registerGuardedHandle('go-live', async (_event, { meetingId, catchUp = false } =
   if (sessionState.mode === 'live') return { ok: true };
   sessionState.mode = 'live';
   getDB().prepare("UPDATE Meetings SET recording_mode = 'live' WHERE id = ?").run(sessionState.dbId);
-  await sessionState.audioWriter?.waitForIdle();
-  const cutBytes = sessionState.pcmPath && fs.existsSync(sessionState.pcmPath) ? fs.statSync(sessionState.pcmPath).size : 0;
+  const liveStart = new Promise((resolve) => { sessionState.resolveLiveStart = resolve; });
   await startLiveTranscription(meetingId);
+  if (sessionState.sttStartFailed) return { ok: false };
+  // Chunks arrive every ~250 ms; the first streamed one fixes the boundary.
+  const cutBytes = await Promise.race([liveStart, new Promise((resolve) => setTimeout(() => resolve(sessionState.pcmBytes), 5000))]);
+  await sessionState.audioWriter?.waitForIdle();
   if (catchUp && cutBytes > 32000) {
     sessionState.catchUpPromise = runCatchUp(sessionState, cutBytes).catch((error) => {
       console.warn('[Main] Catch-up failed:', error.message);
-      emitToRenderer('transcription-status', { meetingId, state: 'lost', detail: `Could not transcribe the earlier part: ${error.message}` });
+      emitToRenderer('transcription-status', { meetingId, state: 'lost', detail: `Could not transcribe the earlier part now; it is transcribed after the meeting. (${error.message})` });
+      sessionState.liveGap = true;
       return [];
     });
-  } else {
-    // Without catch-up the earlier audio is still in the recording; mark the gap.
-    sessionState.liveStartedAtMs = Math.round((cutBytes / 32000) * 1000);
+  } else if (cutBytes > 32000) {
+    // No catch-up: the earlier part is only in the recording, so after the meeting
+    // the whole recording is transcribed once (the live transcript alone has a gap).
+    sessionState.liveGap = true;
   }
   return { ok: true };
 });
@@ -692,12 +739,13 @@ async function runCatchUp(sessionState, cutBytes) {
   }
   await pcmToMp3(partPcm, partMp3);
   await fsPromises.rm(partPcm, { force: true });
-  const jobId = await submitBatchJob(partMp3, { diarize: false });
+  // Diarized output comes back as utterances (not single words), each labelled from the levels below.
+  const jobId = await submitBatchJob(partMp3, { diarize: true });
   const result = await waitForBatchJob(jobId);
   await fsPromises.rm(partMp3, { force: true });
   const frames = await readLevelsFile(levelsPathFor({ transcript_path: sessionState.transcriptPath }));
   const slots = new Map(frames.map(([t, mic, sys]) => [Math.round(t / 100), [mic, sys]]));
-  const entries = result.segments.map((segment) => {
+  const entries = result.entries.map((item) => ({ text: item.text, start: item.startSeconds ?? 0, end: item.endSeconds ?? item.startSeconds ?? 0 })).map((segment) => {
     const { share } = micShare(slots, segment.start * 1000, segment.end * 1000);
     const side = share === null ? null : share >= 0.62 ? 'local' : share <= 0.4 ? 'remote' : null;
     return {
@@ -743,9 +791,18 @@ registerGuardedEvent('send-audio-chunk', (_event, message) => {
     audioDiagnostics.add(message.meetingId);
     console.log(`[Audio] First audio chunk received in main for meeting ${message.meetingId}`);
   }
-  sendChunk(message.meetingId, message.buffer);
+  const streamed = sendChunk(message.meetingId, message.buffer);
   const sessionState = getMeetingSession(message.meetingId);
-  if (sessionState?.audioWriter && !sessionState.audioWriter.finalizing) {
+  if (!sessionState) return;
+  const bytes = message.buffer.byteLength ?? message.buffer.length ?? 0;
+  // Go live: the first streamed chunk marks exactly where the catch-up part ends,
+  // so the earlier batch part and the live part neither overlap nor leave a gap.
+  if (streamed && sessionState.liveStartByte === undefined) {
+    sessionState.liveStartByte = sessionState.pcmBytes;
+    sessionState.resolveLiveStart?.(sessionState.liveStartByte);
+  }
+  sessionState.pcmBytes += bytes;
+  if (sessionState.audioWriter && !sessionState.audioWriter.finalizing) {
     sessionState.audioWriter.enqueue(message.buffer);
   }
 });
@@ -769,7 +826,7 @@ registerGuardedHandle('stop-transcription', async (_event, { meetingId, dbId }) 
   if (sessionState.artifactsPath) {
     // Sarvam reports the billed audio duration at session end; the cost view uses it.
     // `incomplete` makes the pipeline rebuild the transcript from the recording.
-    const stt = { ...(result.stt ?? { provider: 'sarvam', billedAudioSeconds: 0 }), incomplete: Boolean(result.incomplete || sessionState.sttStartFailed) };
+    const stt = { ...(result.stt ?? { provider: 'sarvam', billedAudioSeconds: 0 }), incomplete: Boolean(result.incomplete || sessionState.sttStartFailed || sessionState.liveGap) };
     await updateArtifactsFile(sessionState.artifactsPath, (current) => ({
       ...current,
       usage: { ...(current.usage ?? {}), stt },
@@ -842,7 +899,7 @@ registerGuardedHandle('stop-meeting', async (_event, { meetingId, dbId, startTim
     .reduce((count, entry) => count + String(entry.text ?? '').trim().split(/\s+/).filter(Boolean).length, 0);
   // "Silent" only counts when live transcription actually worked and no second
   // pass is coming. Otherwise the audio is kept and transcribed in batch.
-  const confirmedSilent = sessionState.mode === 'live' && spokenWords === 0 && sessionState.sttHealthy === true;
+  const confirmedSilent = sessionState.startedMode === 'live' && spokenWords === 0 && sessionState.sttHealthy === true;
   if (durationMs < MIN_MEETING_MS || confirmedSilent) {
     await discardMeeting(sessionState, meetingId, dbId);
     return {
@@ -1104,19 +1161,26 @@ registerGuardedHandle('rename-speaker', async (_event, { dbId, from, to } = {}) 
   const oldName = String(from ?? '').trim();
   const newName = String(to ?? '').trim();
   if (!oldName || !newName || oldName === newName) return true;
+  if (meeting.owner_name === oldName) getDB().prepare('UPDATE Meetings SET owner_name = ? WHERE id = ?').run(newName, meeting.id);
   await rewriteSpeakerNames(meeting, (entry) => (entry.speakerLabel === oldName ? { ...entry, speakerLabel: newName } : entry));
   const swap = (value) => (value === oldName ? newName : value);
   const updated = await updateArtifactsFile(meeting.artifacts_path, (current) => {
-    const speakers = Object.fromEntries(Object.entries(current.speakerMap?.speakers ?? {})
-      .map(([id, person]) => [id, { ...person, name: swap(person.name) }]));
+    const speakers = current.speakerMap?.speakers
+      ? Object.fromEntries(Object.entries(current.speakerMap.speakers).map(([id, person]) => [id, { ...person, name: swap(person.name) }]))
+      : undefined;
     const extraction = current.extraction ? {
       ...current.extraction,
       decisions: current.extraction.decisions.map((d) => ({ ...d, evidence: d.evidence.map((ev) => ({ ...ev, speaker: swap(ev.speaker) })) })),
       action_items: current.extraction.action_items.map((a) => ({ ...a, owner: swap(a.owner) })),
       documents_requested: current.extraction.documents_requested.map((doc) => ({ ...doc, from: swap(doc.from) })),
     } : current.extraction;
-    return { ...current, speakerMap: current.speakerMap ? { ...current.speakerMap, speakers } : current.speakerMap, extraction };
+    const speakerMap = current.speakerMap
+      ? { ...current.speakerMap, ...(speakers ? { speakers } : {}), ...(current.speakerMap.names ? { names: current.speakerMap.names.map(swap) } : {}) }
+      : current.speakerMap;
+    return { ...current, speakerMap, extraction };
   });
+  // The summary text may still use the old name: show "Update summary".
+  if (updated.extraction) await updateArtifactsFile(meeting.artifacts_path, (current) => ({ ...current, extractionStale: true }));
   if (updated.extraction) {
     await editExtractionItem({ dbId: meeting.id, artifactsPath: meeting.artifacts_path, title: meeting.title, kind: 'task', id: '__none__', patch: { delete: true } });
   }
@@ -1136,22 +1200,24 @@ registerGuardedHandle('confirm-owner', async (_event, { dbId, speakerId, isOwner
   const predicted = map.ownerId === String(speakerId);
   getDB().prepare('INSERT INTO SpeakerFeedback (meeting_id, speaker_id, predicted_owner, answer, confidence, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .run(meeting.id, String(speakerId), predicted ? 1 : 0, isOwner ? 'yes' : 'no', map.confidence ?? null, new Date().toISOString());
-  if (isOwner === predicted) {
-    await updateArtifactsFile(meeting.artifacts_path, (current) => ({ ...current, speakerMap: { ...current.speakerMap, confirmed: true, needsConfirmation: false } }));
-    emitArtifacts(meeting);
-    return { changed: false };
-  }
-  // Owner changes: the chosen speaker becomes the owner; the previous owner becomes "Speaker N" (or Client).
+  // The chosen speaker becomes the owner (named); anyone who had the owner's name gets a neutral one.
   const ownerName = meeting.owner_name || 'You';
   const speakers = { ...map.speakers };
   const newOwnerId = isOwner ? String(speakerId) : null;
+  const unchanged = isOwner === predicted && speakers[String(speakerId)]?.isOwner === isOwner;
   let counter = Object.keys(speakers).length + 1;
   for (const [id, person] of Object.entries(speakers)) {
     if (id === newOwnerId) speakers[id] = { ...person, name: ownerName, isOwner: true, side: 'local' };
-    else if (person.isOwner || (!isOwner && id === String(speakerId))) {
-      speakers[id] = { ...person, name: person.side === 'remote' ? (remoteNameHint({ clientName: meeting.client_name, title: meeting.title }) || 'Client') : `Speaker ${counter}`, isOwner: false };
+    else if (person.isOwner || person.name === ownerName || (!isOwner && id === String(speakerId))) {
+      const remote = person.side === 'remote' || (typeof person.share === 'number' && person.share <= 0.4);
+      speakers[id] = { ...person, side: remote ? 'remote' : person.side, name: remote ? (remoteNameHint({ clientName: meeting.client_name, title: meeting.title }) || 'Client') : `Speaker ${counter}`, isOwner: false };
       counter += 1;
     }
+  }
+  if (unchanged) {
+    await updateArtifactsFile(meeting.artifacts_path, (current) => ({ ...current, speakerMap: { ...current.speakerMap, confirmed: true, needsConfirmation: false } }));
+    emitArtifacts(meeting);
+    return { changed: false };
   }
   await rewriteSpeakerNames(meeting, (entry) => {
     const person = entry.speakerId === null || entry.speakerId === undefined ? null : speakers[String(entry.speakerId)];
@@ -1308,17 +1374,10 @@ registerGuardedHandle('rename-meeting', async (_event, { dbId, title }) => {
   const db = getDB();
   db.prepare('UPDATE Meetings SET title = ? WHERE id = ?').run(title, dbId);
 
-  // Also update the artifacts.json title if it exists
+  // Through the write queue, so a rename during processing cannot undo the record.
   const meeting = db.prepare('SELECT artifacts_path FROM Meetings WHERE id = ?').get(dbId);
   if (meeting?.artifacts_path && fs.existsSync(meeting.artifacts_path)) {
-    try {
-      const raw = await fsPromises.readFile(meeting.artifacts_path, 'utf8');
-      const artifacts = JSON.parse(raw);
-      artifacts.title = title;
-      await fsPromises.writeFile(meeting.artifacts_path, JSON.stringify(artifacts, null, 2), 'utf8');
-    } catch {
-      // Non-critical — DB is already updated
-    }
+    await updateArtifactsFile(meeting.artifacts_path, (current) => ({ ...current, title })).catch(() => {});
   }
 
   return { success: true };

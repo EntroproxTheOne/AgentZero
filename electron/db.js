@@ -153,6 +153,8 @@ export function initDB() {
   addMeetingColumn('recording_mode', "TEXT NOT NULL DEFAULT 'notes'");
   // The app owner's display name at recording time (speaker mapping uses it).
   addMeetingColumn('owner_name', 'TEXT');
+  // online | in-person (null for uploads): speaker mapping needs to know.
+  addMeetingColumn('capture_mode', 'TEXT');
 
   if (!appSettingsColumns.some((col) => col.name === 'recording_mode')) {
     db.prepare("ALTER TABLE AppSettings ADD COLUMN recording_mode TEXT NOT NULL DEFAULT 'notes'").run();

@@ -133,11 +133,17 @@ export default function MeetingRecorder({
       video.srcObject = new MediaStream([track]);
       await video.play().catch(() => {});
       previous?.getVideoTracks().forEach((old) => { old.onended = null; old.stop(); });
-      track.onended = () => { void setVideoSource('screen'); };
+      track.onended = () => pauseVideo();
       publishCapture({ videoSource: sourceId, problem: null });
     } catch (error) {
       publishCapture({ problem: `Could not switch the video: ${error instanceof Error ? error.message : String(error)}` });
     }
+  };
+
+  const pauseVideo = () => {
+    const video = videoElRef.current;
+    if (video) video.srcObject = null;
+    publishCapture({ videoSource: 'paused', problem: 'The shared window closed, so the video is paused. Audio is still recording. Pick what to show.' });
   };
 
   const controls: CaptureControls = {
@@ -261,6 +267,7 @@ export default function MeetingRecorder({
         projectId: meetingContext.projectId,
         agenda: meetingContext.agenda,
         mode,
+        online: capture.computerSound,
       });
       meetingInfoRef.current = {
         meetingId: meetingInfo.meetingId,
@@ -371,7 +378,6 @@ export default function MeetingRecorder({
       }
 
       await startPcmPipeline(meetingAudio, meetingInfoRef.current.meetingId);
-      startLevelMeter(meetingInfoRef.current.meetingId);
 
       setIsRecording(true);
       onRecordingStarted?.(recordingStream, stopRecording, titleRef.current, meetingInfoRef.current, controls);
@@ -381,8 +387,8 @@ export default function MeetingRecorder({
       const displayVideoTrack = meetingInfo.recordScreen ? displayStream?.getVideoTracks()[0] : undefined;
       if (displayVideoTrack) {
         displayVideoTrack.onended = () => {
-          window.electronAPI?.log('warn', 'Shared window closed; switching the video to the whole screen');
-          void controls.setVideoSource('screen');
+          window.electronAPI?.log('warn', 'Shared window closed; video paused until a new source is picked');
+          pauseVideo();
         };
       }
       publishCapture({ videoSource: meetingInfo.recordScreen ? videoSource : undefined });
@@ -437,6 +443,8 @@ export default function MeetingRecorder({
 
     const micSource = audioCtx.createMediaStreamSource(micStream);
     micSource.connect(workletNode, 0, 0);
+    // Levels and saved audio start together, so their timelines line up.
+    startLevelMeter(meetingId);
 
     await window.electronAPI.startTranscription({ meetingId });
 
@@ -464,8 +472,10 @@ export default function MeetingRecorder({
   const startVideoCompositor = (track: MediaStreamTrack) => {
     const settings = track.getSettings();
     const canvas = document.createElement('canvas');
-    canvas.width = Math.min(1920, settings.width || 1280);
-    canvas.height = Math.min(1080, settings.height || 720);
+    // Fixed even size: H.264 / yuv420p needs even dimensions, and a later switch to a bigger source still fits.
+    canvas.width = 1920;
+    canvas.height = 1080;
+    void settings;
     const ctx = canvas.getContext('2d');
     const video = document.createElement('video');
     video.muted = true;
@@ -474,7 +484,7 @@ export default function MeetingRecorder({
     void video.play().catch(() => {});
     videoElRef.current = video;
     const draw = () => {
-      if (!ctx || video.readyState < 2) return;
+      if (!ctx || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return;
       const scale = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight) || 1;
       const w = video.videoWidth * scale;
       const h = video.videoHeight * scale;

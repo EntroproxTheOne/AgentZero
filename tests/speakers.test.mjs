@@ -41,7 +41,7 @@ const cases = {
 };
 
 for (const [name, c] of Object.entries(cases)) {
-  const map = mapSpeakers({ entries: c.entries, frames: c.frames, ownerName: 'Adviser', remoteHint: null });
+  const map = mapSpeakers({ entries: c.entries, frames: c.frames, ownerName: 'Adviser', remoteHint: null, online: c.online ?? true });
   assert.equal(map.ownerId, c.owner, `${name}: owner`);
   assert.equal(map.speakers[c.owner].name, 'Adviser', `${name}: owner name`);
   if (c.oneSided) assert.equal(map.oneSided, true, `${name}: one-sided`);

@@ -131,8 +131,10 @@ export async function runTemplate({ dbId, templateId }) {
   const template = getDB().prepare('SELECT * FROM Templates WHERE id = ?').get(templateId);
   if (!template) throw new Error('Template not found');
   const { meeting, artifacts } = await loadMeeting(dbId);
-  const extraction = extractionForPrompt(artifacts?.extraction);
-  if (!extraction) throw new Error('The meeting record is not ready yet.');
+  const full = extractionForPrompt(artifacts?.extraction);
+  if (!full) throw new Error('The meeting record is not ready yet.');
+  // Client-facing text must not repeat what was later changed.
+  const extraction = { ...full, decisions: full.decisions.filter((d) => d.status !== 'reversed'), action_items: full.action_items.filter((a) => a.status !== 'cancelled') };
   const prompt = [
     'You write a document from a meeting record. Return valid JSON only: {"text":"string"}',
     'The meeting record below is the only source of facts. Do not add decisions, tasks, figures, owners or dates that are not in it.',

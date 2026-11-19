@@ -2636,3 +2636,11 @@
 .capture-source-row { cursor: default; }
 .capture-source-select { width: auto; max-width: 260px; }
 .capture-source-inline { padding: 4px 8px; font-size: 12px; max-width: 220px; }
+
+.bento-right-only { display: flex; flex: 1; min-height: 0; }
+.bento-right-only > .bento-right-bottom-right { flex: 1; display: flex; }
+.post-meeting { gap: 10px; }
+@media (max-width: 1180px) {
+  .pm-grid { grid-template-columns: 1fr; }
+  .bento-right-bottom { flex-direction: column; }
+}

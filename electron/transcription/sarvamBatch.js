@@ -49,7 +49,8 @@ export async function submitBatchJob(audioPath, { diarize = false, numSpeakers, 
     body: {
       job_parameters: {
         model: 'saaras:v4',
-        mode: 'transcribe',
+        // codemix: English words stay in English, Indian languages in their script (verified 19 Nov 2026).
+        mode: 'codemix',
         language_code: 'unknown',
         with_timestamps: true,
         with_diarization: Boolean(diarize),
@@ -113,7 +114,9 @@ export async function waitForBatchJob(jobId, { onProgress = () => {}, timeoutMs 
   const download = await sarvamJson(`${BASE}/download-files`, { body: { job_id: jobId, files: [outputName] } });
   const downloadUrl = download.download_urls?.[outputName]?.file_url;
   if (!downloadUrl) throw new Error('Sarvam did not return a download URL');
-  const result = await (await fetch(downloadUrl)).json();
+  const resultResponse = await fetch(downloadUrl);
+  if (!resultResponse.ok) throw new Error(`Sarvam result download failed (${resultResponse.status})`);
+  const result = await resultResponse.json();
   return { ...toEntries(result), jobId };
 }
 

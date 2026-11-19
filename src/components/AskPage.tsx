@@ -35,6 +35,14 @@ export default function AskPage({ onOpenMeeting }: AskPageProps) {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [turns, busy]);
 
+  // A new client / project scope starts a fresh conversation: earlier answers may be about someone else.
+  const scope = `${clientId ?? ''}|${projectId ?? ''}`;
+  const [turnsScope, setTurnsScope] = useState(scope);
+  if (turnsScope !== scope) {
+    setTurnsScope(scope);
+    setTurns([]);
+  }
+
   const ask = async (text: string) => {
     const clean = text.trim();
     if (!clean || busy) return;

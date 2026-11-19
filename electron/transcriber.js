@@ -26,10 +26,12 @@ export async function startTranscription(meetingId, { mainWindow, onFinalEntry, 
   sessions.set(meetingId, session);
 }
 
+/** Returns true when the chunk went to a live transcription session. */
 export function sendChunk(meetingId, buffer) {
   const session = sessions.get(meetingId);
-  if (!session) return;
+  if (!session) return false;
   void session.sendChunk(buffer);
+  return true;
 }
 
 export function getTranscriptEntries(meetingId) {

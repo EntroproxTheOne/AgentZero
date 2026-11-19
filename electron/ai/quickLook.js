@@ -22,7 +22,8 @@ export async function answerQuickLookQuestion(session, { question, history, webS
     chatHistory: trimmedHistory,
   });
 
-  const tier = isComplexQuestion(question) ? 'big' : 'fast';
+  // Live Quick Ask: always Flash-Lite; the deeper Ask is after the meeting.
+  const tier = 'fast';
   const response = await generateGeminiJson({
     tier,
     prompt,
@@ -30,7 +31,7 @@ export async function answerQuickLookQuestion(session, { question, history, webS
     useSearch: false,
     usageFile: session?.artifactsPath ?? null,
     purpose: 'quicklook',
-    context: session?.contextText ?? '',
+    context: session?.liveContextText ?? session?.contextText ?? '',
   });
 
   let quickLook;
@@ -72,10 +73,6 @@ export async function answerQuickLookQuestion(session, { question, history, webS
   };
 }
 
-function isComplexQuestion(question) {
-  return question.trim().length > 180
-    || /\b(analy[sz]e|compare|contrast|trade[- ]?off|strategy|detailed|step[- ]by[- ]step|why|how should)\b/i.test(question);
-}
 
 /**
  * Web mode: only the question itself is sent, with Google Search grounding.

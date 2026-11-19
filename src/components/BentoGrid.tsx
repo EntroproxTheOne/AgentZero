@@ -91,34 +91,22 @@ export default function BentoGrid({ meetingId, listenerName }: BentoGridProps) {
     ));
   };
 
-  if (!insightsOn) {
-    return (
-      <div className="bento-grid bento-grid-simple">
-        <div className="bento-left">
-          <LiveTranscript meetingId={meetingId} />
-        </div>
-        <div className="bento-right">
-          <QuickLookChat listenerName={listenerName} meetingId={meetingId} />
-        </div>
-      </div>
-    );
-  }
-
+  // One tree whether or not insights are on, so the transcript never remounts (and loses lines).
   return (
-    <div className="bento-grid">
+    <div className={`bento-grid ${insightsOn ? '' : 'bento-grid-simple'}`}>
       <div className="bento-left">
         <LiveTranscript meetingId={meetingId} />
-        <JargonExplainer items={jargonItems} />
+        {insightsOn && <JargonExplainer items={jargonItems} />}
       </div>
 
       <div className="bento-right">
-        <LiveQuestions questions={questions} onToggle={handleToggleQuestion} />
-
-        <div className="bento-right-bottom">
-          <div className="bento-right-bottom-left">
-            <AISuggestions suggestions={suggestions} />
-          </div>
-
+        {insightsOn && <LiveQuestions questions={questions} onToggle={handleToggleQuestion} />}
+        <div className={insightsOn ? 'bento-right-bottom' : 'bento-right-only'}>
+          {insightsOn && (
+            <div className="bento-right-bottom-left">
+              <AISuggestions suggestions={suggestions} />
+            </div>
+          )}
           <div className="bento-right-bottom-right">
             <QuickLookChat listenerName={listenerName} meetingId={meetingId} />
           </div>
